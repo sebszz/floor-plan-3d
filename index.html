@@ -57,6 +57,12 @@ button{
 }
 button[aria-pressed="true"]{background:var(--btn-on);color:var(--btn-on-text);border-color:transparent}
 button[hidden]{display:none}
+.tod{margin-bottom:10px}
+.tod label{display:flex;justify-content:space-between;font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.tod label span{color:var(--text);font-variant-numeric:tabular-nums;letter-spacing:0}
+.tod input{width:100%;margin:6px 0;accent-color:var(--accent)}
+.presets{display:flex;flex-wrap:wrap;gap:4px}
+.presets button{font-size:.75rem;padding:4px 7px}
 .phead{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .phead h1{margin:0}
 #pbody{margin-top:8px}
@@ -106,6 +112,14 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
       <option value="bedroom">Go to bedroom</option>
       <option value="mezzanine">Go to mezzanine</option>
     </select>
+  </div>
+  <div class="tod">
+    <label for="tod">Sun <span id="todVal">13:00</span></label>
+    <input type="range" id="tod" min="4" max="22" step="0.25" value="13">
+    <div class="presets">
+      <button data-h="6.2">Sunrise</button><button data-h="9">Morning</button><button data-h="13">Midday</button>
+      <button data-h="16.5">Afternoon</button><button data-h="19.8">Sunset</button><button data-h="21.5">Night</button>
+    </div>
   </div>
   <div class="controls">
     <button id="btnRoof" aria-pressed="false">Show roof</button>
@@ -168,14 +182,45 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   controls.maxPolarAngle = Math.PI/2.05;
   controls.minDistance = 4; controls.maxDistance = 45;
 
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f94, 0.75));
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x8a8f94, 0.75); scene.add(hemi);
   const sun = new THREE.DirectionalLight(0xffffff, 0.75);
   sun.position.set(-8, 14, 10);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
-  Object.assign(sun.shadow.camera, {left:-12,right:12,top:12,bottom:-12,near:1,far:50});
+  Object.assign(sun.shadow.camera, {left:-20,right:20,top:20,bottom:-20,near:1,far:90});
   sun.shadow.bias = -0.0005;
   scene.add(sun);
+
+  // ---- Time of day: sun path, colour and sky ----
+  // Assumes the front (glass doors) faces south: sun rises on the right-hand side (east), sets on the left (west).
+  let tod = 13;
+  const C = h => new THREE.Color(h);
+  const clamp01 = v => Math.min(1, Math.max(0, v));
+  function setTime(h){
+    tod = h;
+    const t = (h - 6) / 14 * Math.PI;              // 06:00 east, 13:00 south, 20:00 west
+    const e = Math.sin(t) * 0.95;                  // elevation, max about 54 degrees
+    const up = Math.sin(e);
+    const warm = 1 - clamp01(up / 0.45);           // 1 at the horizon, 0 high in the sky
+    if (up > -0.03){
+      const ce = Math.cos(e), el = Math.max(up, 0.03);
+      sun.position.set(Math.cos(t)*ce*30, el*30, Math.sin(t)*ce*30);
+      sun.color.copy(C(0xffffff).lerp(C(0xff7a30), warm*0.9));
+      sun.intensity = 0.9 * clamp01((up + 0.03) / 0.15);
+    } else {                                         // moonlight
+      sun.position.set(-10, 22, 12);
+      sun.color.set(0x9db4ff); sun.intensity = 0.12;
+    }
+    let sky;
+    if (up >= 0) sky = C(0xf2a679).lerp(C(0xbcd6ea), clamp01(up / 0.4));
+    else sky = C(0xf2a679).lerp(C(0x0e1526), clamp01(-up / 0.15));
+    scene.background = sky;
+    const night = clamp01(-up / 0.15);
+    hemi.color.copy(C(0xdfefff).lerp(C(0xffc49a), warm*0.8).lerp(C(0x2a3a60), night));
+    hemi.groundColor.copy(C(0x8a8f94).lerp(C(0x1a1d24), night));
+    hemi.intensity = 0.75 - 0.35*warm*(1-night) - 0.55*night;
+    renderer.shadowMap.needsUpdate = true;
+  }
 
   const groundMat = new THREE.MeshStandardMaterial({color:0xcfd5da, roughness:1});
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), groundMat);
@@ -1096,7 +1141,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   // ---- Theme ----
   function applyTheme(){
     const cs = getComputedStyle(document.documentElement);
-    scene.background = new THREE.Color(cs.getPropertyValue('--bg').trim() || '#dfe4e8');
+    setTime(tod);
     groundMat.color.set(cs.getPropertyValue('--ground').trim() || '#cfd5da');
   }
   applyTheme();
@@ -1116,6 +1161,22 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     btnCut.setAttribute('aria-pressed', String(on));
     build(); syncVis();
   });
+  // time of day controls
+  const todIn = document.getElementById('tod'), todVal = document.getElementById('todVal');
+  const fmt = h => { const m = Math.round(h*60); return String(Math.floor(m/60)%24).padStart(2,'0') + ':' + String(m%60).padStart(2,'0'); };
+  function applyTod(h){ setTime(h); todIn.value = h; todVal.textContent = fmt(h); }
+  todIn.addEventListener('input', () => applyTod(parseFloat(todIn.value)));
+  let todAnim = 0;
+  document.querySelectorAll('.presets button').forEach(b => b.addEventListener('click', () => {
+    const from = tod, to = parseFloat(b.dataset.h), t0 = performance.now(), id = ++todAnim;
+    (function step(){
+      if (id !== todAnim) return;
+      const k = Math.min(1, (performance.now() - t0) / 900), e = k < 0.5 ? 2*k*k : 1 - Math.pow(-2*k+2, 2)/2;
+      applyTod(from + (to - from) * e);
+      if (k < 1) requestAnimationFrame(step);
+    })();
+  }));
+
   // minimise / expand the options box (remembered in this browser)
   const panel = document.querySelector('.panel'), btnMin = document.getElementById('btnMin');
   function setMin(on){
