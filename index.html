@@ -1,0 +1,1235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Floor plan in 3D</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#dfe4e8; --panel:rgba(255,255,255,.9); --text:#1d2833; --muted:#5b6875;
+  --accent:#2f5d8a; --line:rgba(29,40,51,.14); --btn:#ffffff; --btn-on:#2f5d8a; --btn-on-text:#ffffff;
+  --ground:#cfd5da;
+  color-scheme:light;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#1c2228; --panel:rgba(32,40,48,.92); --text:#e6ebef; --muted:#9aa7b3;
+    --accent:#7fb0de; --line:rgba(230,235,239,.14); --btn:#28323c; --btn-on:#7fb0de; --btn-on-text:#10161c;
+    --ground:#252d35;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#1c2228; --panel:rgba(32,40,48,.92); --text:#e6ebef; --muted:#9aa7b3;
+  --accent:#7fb0de; --line:rgba(230,235,239,.14); --btn:#28323c; --btn-on:#7fb0de; --btn-on-text:#10161c;
+  --ground:#252d35;
+  color-scheme:dark;
+}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);font-family:"Archivo",system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
+#scene{position:fixed;inset:0;touch-action:none}
+.panel{
+  position:fixed;left:12px;top:calc(env(safe-area-inset-top,0px) + 12px);
+  max-width:min(330px,calc(100% - 24px));
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:14px 16px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+}
+h1{font-size:1.05rem;margin:0 0 6px;font-weight:700;letter-spacing:-.01em}
+.rooms{margin:0 0 12px;padding:0;list-style:none;font-size:.88rem;line-height:1.5;color:var(--muted)}
+.rooms b{color:var(--text);font-weight:500}
+.goto{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+.goto label{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+select{
+  font:inherit;font-size:.9rem;padding:8px 10px;border-radius:6px;
+  border:1px solid var(--line);background:var(--btn);color:var(--text);cursor:pointer;
+}
+.controls{display:flex;flex-wrap:wrap;gap:6px}
+button{
+  font:inherit;font-size:.82rem;padding:7px 10px;border-radius:6px;cursor:pointer;
+  border:1px solid var(--line);background:var(--btn);color:var(--text);
+}
+button[aria-pressed="true"]{background:var(--btn-on);color:var(--btn-on-text);border-color:transparent}
+button[hidden]{display:none}
+button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.hint[hidden],.rooms[hidden]{display:none}
+.hint{
+  position:fixed;right:12px;bottom:calc(env(safe-area-inset-bottom,0px) + 12px);
+  font-size:.8rem;color:var(--muted);background:var(--panel);padding:6px 10px;border-radius:6px;border:1px solid var(--line);
+  max-width:calc(100% - 24px)
+}
+.tip{
+  position:fixed;z-index:5;pointer-events:none;background:var(--panel);border:1px solid var(--line);
+  border-radius:8px;padding:8px 11px;font-size:.84rem;line-height:1.4;box-shadow:0 6px 18px rgba(0,0,0,.16);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)
+}
+.tip b{display:block;font-weight:700}
+.tip span{color:var(--muted)}
+.tip[hidden]{display:none}
+</style>
+</head>
+<body>
+<div id="scene"></div>
+
+<div class="panel">
+  <h1>Floor plan, 3D</h1>
+  <ul class="rooms">
+    <li><b>Bedroom</b> 3.5 × 4.1 m, 14.4 m²</li>
+    <li><b>Room B</b> 8 × 4.5 m, open plan kitchen and lounge</li>
+    <li><b>Bathroom</b> 1.3 × 2.5 m, shower, WC and sink</li>
+    <li><b>Mezzanine</b> over the bathroom, double bed, ladder</li>
+  </ul>
+  <div class="goto">
+    <label for="goto">Walk through</label>
+    <select id="goto">
+      <option value="overview">Overview (outside)</option>
+      <option value="entrance">Go to entrance</option>
+      <option value="lounge">Go to lounge</option>
+      <option value="kitchen">Go to kitchen</option>
+      <option value="bathroom">Go to bathroom</option>
+      <option value="bedroom">Go to bedroom</option>
+      <option value="mezzanine">Go to mezzanine</option>
+    </select>
+  </div>
+  <div class="controls">
+    <button id="btnRoof" aria-pressed="false">Show roof</button>
+    <button id="btnText" aria-pressed="false">Hide text</button>
+    <button id="btnCut" aria-pressed="false">Cut walls down</button>
+    <button id="btnTop">Top view</button>
+    <button id="btnReset">Reset view</button>
+    <button id="btnVR" hidden>Enter VR</button>
+  </div>
+</div>
+<div class="hint" id="hint"></div>
+<div class="tip" id="tip" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+(function(){
+  // ---- Plan data (metres). x runs left to right, z runs back (0) to front ----
+  const T = 0.15, FULL_H = 2.5, DOOR_H = 2.1, SILL = 0.9, WIN_TOP = 2.1;
+  const EYE = 1.6;
+  const ROOM_A = [1.75, 2.05], ROOM_B = [7.5, 2.25], BATH = [4.15, 1.2];
+  const NX = 0.4, NZ = 3.6;       // bedroom corner notch
+  const BX = 4.8, BZ = 2.5;
+  const DECK = 2.1;               // mezzanine floor level       // bathroom: x 3.5 to BX, z 0 to BZ
+  const OFF = [-5.75, -2.25]; // model offset so the plan is centred
+
+  // ext: outside face is stone. e0/e1: how far the wall runs past its start/end (corners)
+  const H = T/2;
+  const walls = [
+    { a:[0,0],    b:[11.5,0],  ext:true, s0:1, s1:1, inside:[5.75,2.25], open:[] },
+    { a:[0,0],    b:[0,NZ],    ext:true, s1:1, inside:ROOM_A, e0:-H, open:[{s:0.55,e:1.05,k:'window',y0:0.9,y1:1.9}] },
+    { a:[0,NZ],   b:[NX,NZ],   ext:true, inside:ROOM_A, e0:-H, open:[] },            // corner notch
+    { a:[NX,NZ],  b:[NX,4.1],  ext:true, s1:1, inside:ROOM_A, e0:-H, open:[] },
+    { a:[NX,4.1], b:[3.5,4.1], ext:true, inside:ROOM_A, e0:-H, open:[{s:1.3-NX,e:2.2-NX,k:'door',room:ROOM_A}] },
+    { a:[3.5,0],  b:[3.5,4.1], e0:-H, e1:-H, open:[{s:2.6,e:3.6,k:'gap',h:1.95}] },
+    { a:[3.5,4.1],b:[3.5,4.5], ext:true, s1:1, inside:ROOM_B, e0:-H, open:[] },
+    { a:[3.5,4.5],b:[11.5,4.5],ext:true, s1:1, inside:ROOM_B, e0:-H, open:[{s:1.1,e:2.4,k:'glassdoor',h:1.95},{s:4.5,e:6.0,k:'glassdoor'}] },
+    { a:[11.5,0], b:[11.5,4.5],ext:true, inside:ROOM_B, e0:-H, e1:-H, open:[{s:3.1,e:4.0,k:'door',room:ROOM_B,arch:true,spring:1.95}] },
+    { a:[BX,0],   b:[BX,BZ],   t:0.1, h:DECK-0.1, e0:-H, open:[{s:BZ-0.75,e:BZ-0.05,k:'door',room:BATH,hinge:'e',ang:88,h:1.9}] },
+    { a:[3.5,BZ], b:[BX,BZ],   t:0.1, h:DECK-0.1, e0:-H, e1:-0.05, open:[] }
+  ];
+
+  let wallH = FULL_H;
+
+  // ---- Three.js setup ----
+  const host = document.getElementById('scene');
+  const renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  host.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(42, window.innerWidth/window.innerHeight, 0.05, 200);
+  camera.rotation.order = 'YXZ';
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.maxPolarAngle = Math.PI/2.05;
+  controls.minDistance = 4; controls.maxDistance = 45;
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f94, 0.75));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.75);
+  sun.position.set(-8, 14, 10);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  Object.assign(sun.shadow.camera, {left:-12,right:12,top:12,bottom:-12,near:1,far:50});
+  sun.shadow.bias = -0.0005;
+  scene.add(sun);
+
+  const groundMat = new THREE.MeshStandardMaterial({color:0xcfd5da, roughness:1});
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), groundMat);
+  ground.rotation.x = -Math.PI/2; ground.position.y = -0.03; ground.receiveShadow = true;
+  scene.add(ground);
+
+  const model = new THREE.Group();
+  model.position.set(OFF[0], 0, OFF[1]);
+  scene.add(model);
+
+  const mats = {
+    wall: new THREE.MeshStandardMaterial({color:0xf3f0ea, roughness:0.92}),
+    floorA: new THREE.MeshStandardMaterial({color:0xc9a77c, roughness:0.8}),
+    floorB: new THREE.MeshStandardMaterial({color:0xbf9b6e, roughness:0.8}),
+    door: new THREE.MeshStandardMaterial({color:0x6f5039, roughness:0.7}),
+    glass: new THREE.MeshStandardMaterial({color:0x9cc7de, roughness:0.1, metalness:0.1, transparent:true, opacity:0.38}),
+    frame: new THREE.MeshStandardMaterial({color:0x4a535c, roughness:0.6}),
+    white: new THREE.MeshStandardMaterial({color:0xf7f6f2, roughness:0.6}),
+    roof: new THREE.MeshStandardMaterial({color:0xf1efea, roughness:0.9, side:THREE.DoubleSide})
+  };
+
+  // Grey stone texture (tileable), 1 texture tile = 1.6 m
+  function makeStone(){
+    // rounded rubble stones in warm greys and browns, packed with dark joints (tileable)
+    const S = 512, c = document.createElement('canvas'); c.width = c.height = S;
+    const g = c.getContext('2d');
+    g.fillStyle = '#6e665d'; g.fillRect(0,0,S,S);
+    let rnd = 11; const R = () => (rnd = (rnd*16807) % 2147483647) / 2147483647;
+    const palette = [[156,150,141],[178,171,160],[196,189,177],[143,128,112],[165,145,124],[128,124,118],[205,198,186],[150,138,126]];
+    const stones = [];
+    function addStone(x, y, r){
+      const base = palette[Math.floor(R()*palette.length)], v = (R()-0.5)*30;
+      const pts = [], n = 9 + Math.floor(R()*5), flat = 0.6 + R()*0.3;
+      for (let i=0;i<n;i++){
+        const a = i/n*Math.PI*2 + (R()-0.5)*0.4, k = 0.72 + R()*0.38;
+        pts.push([Math.cos(a)*r*k, Math.sin(a)*r*k*flat]);
+      }
+      stones.push({x, y, rot:(R()-0.5)*0.9, col:base.map(c => Math.max(0, Math.min(255, c + v))), pts, r});
+    }
+    for (let i=0;i<340;i++) addStone(R()*S, R()*S, 7 + R()*10);          // small fillers
+    const cell = 58;
+    for (let gy = 0; gy < S/cell; gy++) for (let gx = 0; gx < S/cell; gx++){
+      const big = R() < 0.25;
+      addStone((gx+0.5)*cell + (R()-0.5)*cell*0.6, (gy+0.5)*cell + (R()-0.5)*cell*0.6,
+               cell*(big ? 0.62 + R()*0.18 : 0.38 + R()*0.2));
+    }
+    const path = (p) => {
+      g.beginPath();
+      for (let i=0;i<p.length;i++){
+        const a = p[i], b = p[(i+1)%p.length], m = [(a[0]+b[0])/2, (a[1]+b[1])/2];
+        if (i === 0) g.moveTo(m[0], m[1]); else g.quadraticCurveTo(a[0], a[1], m[0], m[1]);
+      }
+      const a = p[0], b = p[1]; g.quadraticCurveTo(a[0], a[1], (a[0]+b[0])/2, (a[1]+b[1])/2);
+      g.closePath();
+    };
+    stones.forEach(st => {
+      for (const ox of [-S,0,S]) for (const oy of [-S,0,S]){
+        const cx = st.x + ox, cy = st.y + oy;
+        if (cx < -st.r*1.3 || cx > S+st.r*1.3 || cy < -st.r*1.3 || cy > S+st.r*1.3) continue;
+        g.save(); g.translate(cx, cy); g.rotate(st.rot);
+        // drop shadow in the joint
+        g.save(); g.translate(2, 3); path(st.pts); g.fillStyle = 'rgba(25,20,16,0.55)'; g.fill(); g.restore();
+        path(st.pts);
+        const [r0,g0,b0] = st.col;
+        g.rotate(-st.rot);
+        const gr = g.createRadialGradient(-st.r*0.35, -st.r*0.4, st.r*0.1, 0, 0, st.r*1.05);
+        gr.addColorStop(0, `rgb(${Math.min(255,r0+22)},${Math.min(255,g0+20)},${Math.min(255,b0+18)})`);
+        gr.addColorStop(0.6, `rgb(${r0},${g0},${b0})`);
+        gr.addColorStop(1, `rgb(${r0*0.62|0},${g0*0.6|0},${b0*0.58|0})`);
+        g.fillStyle = gr; g.fill();
+        g.save(); g.clip();
+        for (let i=0;i<70;i++){   // granite speckles
+          const d = R() < 0.5 ? 0 : 255;
+          g.fillStyle = `rgba(${d},${d},${d},${0.08 + R()*0.12})`;
+          g.fillRect((R()-0.5)*st.r*2, (R()-0.5)*st.r*2, 1.5 + R()*1.5, 1.5 + R()*1.5);
+        }
+        g.restore();
+        g.restore();
+      }
+    });
+    const t = new THREE.CanvasTexture(c);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1/1.6, 1/1.6);
+    t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    return t;
+  }
+  // soft vertical gradient on plaster so walls read apart from each other
+  (function(){
+    const c = document.createElement('canvas'); c.width = 4; c.height = 256;
+    const g = c.getContext('2d');
+    const gr = g.createLinearGradient(0, 0, 0, 256);
+    gr.addColorStop(0, '#fbfaf7'); gr.addColorStop(0.55, '#ece8e1');
+    gr.addColorStop(0.95, '#d3cdc3'); gr.addColorStop(0.96, '#bdb6ab'); gr.addColorStop(1, '#bdb6ab');
+    g.fillStyle = gr; g.fillRect(0, 0, 4, 256);
+    const t = new THREE.CanvasTexture(c);
+    t.wrapS = THREE.RepeatWrapping; t.wrapT = THREE.ClampToEdgeWrapping;
+    t.repeat.set(1, 1/FULL_H);
+    mats.wall.map = t; mats.wall.color.set(0xffffff); mats.wall.needsUpdate = true;
+  })();
+  const stoneTex = makeStone();
+  mats.stone = new THREE.MeshStandardMaterial({map:stoneTex, roughness:0.97});
+  mats.stoneDS = new THREE.MeshStandardMaterial({map:stoneTex, roughness:0.95, side:THREE.DoubleSide});
+
+  // White eave trim with a grey pattern, like the border in the photo
+  function makeTrim(){
+    const c = document.createElement('canvas'); c.width = 256; c.height = 64;
+    const g = c.getContext('2d');
+    g.fillStyle = '#f4f2ee'; g.fillRect(0,0,256,64);
+    g.fillStyle = '#8b9096'; g.fillRect(0,6,256,4); g.fillRect(0,54,256,4);
+    for (let i=0;i<8;i++){
+      g.beginPath(); g.moveTo(i*32+4,46); g.lineTo(i*32+16,18); g.lineTo(i*32+28,46); g.fill();
+    }
+    const t = new THREE.CanvasTexture(c);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1/0.5, 1/0.13);
+    return t;
+  }
+  mats.trim = new THREE.MeshStandardMaterial({map:makeTrim(), roughness:0.8});
+
+  // Box UVs in metres so textures keep their real-world scale
+  function scaleUV(geo, sx, sy, sz, ox, oy){
+    const uv = geo.attributes.uv;
+    const f = [[sz,sy,0,oy],[sz,sy,0,oy],[sx,sz,ox,0],[sx,sz,ox,0],[sx,sy,ox,oy],[sx,sy,ox,oy]];
+    for (let i=0;i<24;i++){
+      const [su,sv,ou,ov] = f[Math.floor(i/4)];
+      uv.setXY(i, uv.getX(i)*su + (ou||0), uv.getY(i)*sv + (ov||0));
+    }
+    uv.needsUpdate = true;
+  }
+
+  // Walkable floors
+  const floorsG = new THREE.Group(); model.add(floorsG);
+  function floorSlab(x0, x1, y0, y1, z0, z1, mat){
+    const m = new THREE.Mesh(new THREE.BoxGeometry(x1-x0, y1-y0, z1-z0), mat);
+    m.position.set((x0+x1)/2, (y0+y1)/2, (z0+z1)/2);
+    m.receiveShadow = true; m.userData.floor = true;
+    floorsG.add(m);
+  }
+  floorSlab(0,3.5, -0.04,0, 0,4.1, mats.floorA);
+  floorSlab(3.5,11.5, -0.04,0, 0,4.5, mats.floorB);
+
+  // Room labels (hidden while walking)
+  const labels = [];
+  function label(title, sub){
+    const c = document.createElement('canvas');
+    c.width = 512; c.height = 150;
+    const g = c.getContext('2d');
+    const r = 22;
+    g.fillStyle = 'rgba(255,255,255,0.93)';
+    g.beginPath();
+    g.moveTo(r,0); g.arcTo(512,0,512,150,r); g.arcTo(512,150,0,150,r); g.arcTo(0,150,0,0,r); g.arcTo(0,0,512,0,r);
+    g.fill();
+    g.fillStyle = '#1d2833'; g.textAlign = 'center';
+    g.font = '700 52px Archivo, system-ui, sans-serif'; g.fillText(title, 256, 66);
+    g.fillStyle = '#2f5d8a';
+    g.font = '500 40px Archivo, system-ui, sans-serif'; g.fillText(sub, 256, 120);
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c), depthTest:false, transparent:true}));
+    s.scale.set(2.2, 0.65, 1); s.renderOrder = 10;
+    return s;
+  }
+  [['Bedroom','3.5 × 4.1 m',1.75,2.0],['Bathroom','1.3 × 2.5 m',4.15,1.25],
+   ['Kitchen','Open plan',9.4,1.2],['Lounge','Open plan',6.95,3.3],
+   ['Mezzanine','Sleeping deck',4.7,2.25,3.7]].forEach(([t,s,x,z,y]) => {
+    const l = label(t, s); l.position.set(x, y || 2.9, z); model.add(l); labels.push(l);
+  });
+
+  // ---- Walls with openings ----
+  const built = new THREE.Group(); model.add(built);
+  function clear(){
+    while (built.children.length){
+      const o = built.children.pop();
+      o.traverse(n => { if (n.geometry) n.geometry.dispose(); });
+    }
+  }
+  function addBox(w, u0, u1, y0, y1, mat, thick, off){
+    y1 = Math.min(y1, wallH);
+    if (y1 - y0 <= 0.001 || u1 - u0 <= 0.001) return;
+    const th = thick || w.t || T;
+    const geo = new THREE.BoxGeometry(u1-u0, y1-y0, th);
+    let material = mat;
+    if (mat === mats.wall){
+      scaleUV(geo, u1-u0, y1-y0, th, u0, y0);
+      if (w.ext){
+        material = w.matArr.slice();
+        material[0] = (w.s1 && Math.abs(u1 - w.uEnd) < 1e-6) ? mats.stone : mats.wall;
+        material[1] = (w.s0 && Math.abs(u0 - w.uStart) < 1e-6) ? mats.stone : mats.wall;
+      }
+    }
+    const m = new THREE.Mesh(geo, material);
+    const um = (u0+u1)/2, o = off || 0;
+    m.position.set(w.a[0] + w.d[0]*um - w.d[1]*o, (y0+y1)/2, w.a[1] + w.d[1]*um + w.d[0]*o);
+    m.rotation.y = Math.atan2(-w.d[1], w.d[0]);
+    m.castShadow = !mat.transparent; m.receiveShadow = true;
+    built.add(m);
+  }
+  function addWallShape(w, shape, mat, depth, off){
+    const g = new THREE.ExtrudeGeometry(shape, {depth, bevelEnabled:false});
+    g.translate(0, 0, -depth/2 + (off || 0));
+    const m = new THREE.Mesh(g, mat);
+    m.position.set(w.a[0], 0, w.a[1]); m.rotation.y = Math.atan2(-w.d[1], w.d[0]);
+    m.castShadow = true; m.receiveShadow = true;
+    built.add(m); return m;
+  }
+  function addDoorLeaf(w, op){
+    const width = op.e - op.s - 0.04;
+    const h = Math.min((op.h || DOOR_H) - 0.02, wallH);
+    let n = [-w.d[1], w.d[0]];
+    const mid = [w.a[0] + w.d[0]*(op.s+op.e)/2, w.a[1] + w.d[1]*(op.s+op.e)/2];
+    if ((op.room[0]-mid[0])*n[0] + (op.room[1]-mid[1])*n[1] < 0) n = [-n[0], -n[1]];
+    const ang = (op.ang || 70)*Math.PI/180;
+    const dd = op.hinge === 'e' ? [-w.d[0], -w.d[1]] : w.d;
+    const v = [Math.cos(ang)*dd[0] + Math.sin(ang)*n[0], Math.cos(ang)*dd[1] + Math.sin(ang)*n[1]];
+    const pivot = new THREE.Group();
+    const hinge = op.hinge === 'e' ? op.e - 0.02 : op.s + 0.02, wt = w.t || T;
+    pivot.position.set(w.a[0] + w.d[0]*hinge + n[0]*wt/2, 0, w.a[1] + w.d[1]*hinge + n[1]*wt/2);
+    pivot.rotation.y = Math.atan2(-v[1], v[0]);
+    let leaf;
+    if (op.arch && wallH >= FULL_H){
+      const r = width/2, sp = op.spring, ls = new THREE.Shape();
+      ls.moveTo(0, 0); ls.lineTo(width, 0); ls.lineTo(width, sp);
+      for (let i=1;i<32;i++){ const a = Math.PI*i/32; ls.lineTo(r + r*Math.cos(a), sp + r*Math.sin(a)); }
+      ls.lineTo(0, sp);
+      const g = new THREE.ExtrudeGeometry(ls, {depth:0.045, bevelEnabled:false}); g.translate(0, 0, -0.0225);
+      leaf = new THREE.Mesh(g, mats.door);
+    } else {
+      leaf = new THREE.Mesh(new THREE.BoxGeometry(width, h, 0.045), mats.door);
+      leaf.position.set(width/2, h/2, 0);
+    }
+    leaf.castShadow = true;
+    pivot.add(leaf); built.add(pivot);
+    const pts = [];
+    for (let i=0;i<=24;i++){
+      const t = ang*i/24;
+      pts.push(new THREE.Vector3(
+        pivot.position.x + (Math.cos(t)*dd[0] + Math.sin(t)*n[0])*width, 0.01,
+        pivot.position.z + (Math.cos(t)*dd[1] + Math.sin(t)*n[1])*width));
+    }
+    const arc = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+      new THREE.LineDashedMaterial({color:0x2f5d8a, dashSize:0.08, gapSize:0.06}));
+    arc.computeLineDistances(); built.add(arc);
+  }
+  function build(){
+    clear();
+    walls.forEach(w => {
+      const L = Math.hypot(w.b[0]-w.a[0], w.b[1]-w.a[1]);
+      w.d = [(w.b[0]-w.a[0])/L, (w.b[1]-w.a[1])/L];
+      const wt = w.t || T;
+      const e0 = w.e0 !== undefined ? w.e0 : wt/2, e1 = w.e1 !== undefined ? w.e1 : wt/2;
+      let cur = -e0;
+      const wh = w.h || FULL_H;
+      w.uStart = -e0; w.uEnd = L + e1;
+      if (w.ext){
+        const n1 = [-w.d[1], w.d[0]];
+        const m = [(w.a[0]+w.b[0])/2, (w.a[1]+w.b[1])/2];
+        w.out = ((m[0]-w.inside[0])*n1[0] + (m[1]-w.inside[1])*n1[1]) > 0 ? 1 : -1;
+        const S = mats.stone, P = mats.wall;
+        w.matArr = [S, S, P, P, w.out > 0 ? S : P, w.out > 0 ? P : S];
+      }
+      w.open.slice().sort((p,q)=>p.s-q.s).forEach(op => {
+        if (op.s > cur) addBox(w, cur, op.s, 0, wh, mats.wall);
+        const kind = op.k, DH = op.h || DOOR_H;
+        if (w.ext && op.arch && wallH >= wh){
+          const o = w.out * (wt/2 + 0.012), b = 0.1, r = (op.e-op.s)/2, c = (op.s+op.e)/2, sp = op.spring;
+          addBox(w, op.s-b, op.s, 0, sp, mats.white, 0.025, o);
+          addBox(w, op.e, op.e+b, 0, sp, mats.white, 0.025, o);
+          const ring = new THREE.Shape(), r2 = r + b;
+          ring.moveTo(c + r2, sp);
+          for (let i=1;i<=32;i++){ const a = Math.PI*i/32; ring.lineTo(c + r2*Math.cos(a), sp + r2*Math.sin(a)); }
+          ring.lineTo(c - r, sp);
+          for (let i=31;i>=1;i--){ const a = Math.PI*i/32; ring.lineTo(c + r*Math.cos(a), sp + r*Math.sin(a)); }
+          addWallShape(w, ring, mats.white, 0.025, o);
+        } else if (w.ext && (kind === 'door' || kind === 'glassdoor')){
+          const o = w.out * (wt/2 + 0.012), b = 0.1;
+          addBox(w, op.s-b, op.s, 0, DH+b, mats.white, 0.025, o);
+          addBox(w, op.e, op.e+b, 0, DH+b, mats.white, 0.025, o);
+          addBox(w, op.s-b, op.e+b, DH, DH+b, mats.white, 0.025, o);
+        }
+        if (w.ext && kind === 'window'){
+          const o = w.out * (wt/2 + 0.012), b = 0.08, y0 = op.y0 || SILL, y1 = op.y1 || WIN_TOP;
+          addBox(w, op.s-b, op.s, y0-b, y1+b, mats.white, 0.025, o);
+          addBox(w, op.e, op.e+b, y0-b, y1+b, mats.white, 0.025, o);
+          addBox(w, op.s, op.e, y1, y1+b, mats.white, 0.025, o);
+          addBox(w, op.s, op.e, y0-b, y0, mats.white, 0.025, o);
+        }
+        if (kind === 'door' && op.arch && wallH >= wh){
+          // wall above the opening with a semicircular arch cut out
+          const r = (op.e-op.s)/2, c = (op.s+op.e)/2, sp = op.spring;
+          const sh = new THREE.Shape();
+          sh.moveTo(op.s, sp); sh.lineTo(op.s, wh); sh.lineTo(op.e, wh); sh.lineTo(op.e, sp);
+          for (let i=1;i<32;i++){ const a = Math.PI*i/32; sh.lineTo(c + r*Math.cos(a), sp + r*Math.sin(a)); }
+          addWallShape(w, sh, mats.wall, wt, 0);
+          if (w.ext){
+            const f = new THREE.Mesh(new THREE.ShapeGeometry(sh), mats.stoneDS);
+            f.geometry.translate(0, 0, w.out*(wt/2 + 0.003));
+            f.position.set(w.a[0], 0, w.a[1]); f.rotation.y = Math.atan2(-w.d[1], w.d[0]);
+            built.add(f);
+          }
+          addDoorLeaf(w, op);
+        } else if (kind === 'door' || kind === 'gap'){
+          addBox(w, op.s, op.e, DH, wh, mats.wall);
+          if (kind === 'door') addDoorLeaf(w, op);
+        } else if (kind === 'glassdoor'){
+          addBox(w, op.s, op.e, DH, wh, mats.wall);
+          const mid = (op.s+op.e)/2, f = 0.05;
+          addBox(w, op.s, op.s+f, 0, DH, mats.frame, T);
+          addBox(w, op.e-f, op.e, 0, DH, mats.frame, T);
+          addBox(w, op.s, op.e, DH-f, DH, mats.frame, T);
+          addBox(w, op.s, op.e, 0, 0.03, mats.frame, T);
+          [[op.s+f, mid+0.04, -0.03], [mid-0.04, op.e-f, 0.03]].forEach(([u0,u1,o]) => {
+            addBox(w, u0, u1, 0.03, DH-f, mats.glass, 0.02, o);
+            addBox(w, u0, u0+0.04, 0.03, DH-f, mats.frame, 0.04, o);
+            addBox(w, u1-0.04, u1, 0.03, DH-f, mats.frame, 0.04, o);
+          });
+        } else {
+          const y0 = op.y0 || SILL, y1 = op.y1 || WIN_TOP;
+          addBox(w, op.s, op.e, 0, y0, mats.wall);
+          addBox(w, op.s, op.e, y1, wh, mats.wall);
+          addBox(w, op.s, op.e, y0, y1, mats.glass, 0.02);
+          addBox(w, op.s, op.s+0.04, y0, y1, mats.frame, 0.05);
+          addBox(w, op.e-0.04, op.e, y0, y1, mats.frame, 0.05);
+          addBox(w, op.s, op.e, y0, y0+0.04, mats.frame, 0.05);
+          addBox(w, op.s, op.e, y1-0.04, y1, mats.frame, 0.05);
+        }
+        cur = op.e;
+      });
+      addBox(w, cur, L + e1, 0, wh, mats.wall);
+    });
+  }
+  build();
+
+  // ---- Furniture and fittings ----
+  const fm = {
+    cab: new THREE.MeshStandardMaterial({color:0x5f7a6a, roughness:0.7}),
+    top: new THREE.MeshStandardMaterial({color:0x34383d, roughness:0.4}),
+    steel: new THREE.MeshStandardMaterial({color:0xc4c9ce, roughness:0.35, metalness:0.6}),
+    black: new THREE.MeshStandardMaterial({color:0x1e2125, roughness:0.3}),
+    white: new THREE.MeshStandardMaterial({color:0xf7f6f3, roughness:0.35}),
+    wood: new THREE.MeshStandardMaterial({color:0x8b6a4a, roughness:0.7}),
+    oak: new THREE.MeshStandardMaterial({color:0xb08a5f, roughness:0.75}),
+    sofa: new THREE.MeshStandardMaterial({color:0x7d8ea3, roughness:0.95}),
+    cushion: new THREE.MeshStandardMaterial({color:0x92a3b7, roughness:0.95}),
+    rug: new THREE.MeshStandardMaterial({color:0xd8ccb6, roughness:1}),
+    tile: new THREE.MeshStandardMaterial({color:0xd3dbe0, roughness:0.5}),
+    mirror: new THREE.MeshStandardMaterial({color:0xcfe0ea, roughness:0.15, metalness:0.1}),
+    fabric: new THREE.MeshStandardMaterial({color:0x6b7f8c, roughness:0.95}),
+    duvet: new THREE.MeshStandardMaterial({color:0xc98b6b, roughness:0.95})
+  };
+  const furn = new THREE.Group(); model.add(furn);
+  const tall = new THREE.Group(); model.add(tall);   // hidden when walls are cut down
+  let curItem = null;
+  function item(name, dims){
+    curItem = new THREE.Group();
+    curItem.userData.info = {name, dims};
+    furn.add(curItem);
+  }
+  function done(){ curItem = null; }
+  function bx(x0,x1,y0,y1,z0,z1,mat,grp){
+    const m = new THREE.Mesh(new THREE.BoxGeometry(x1-x0, y1-y0, z1-z0), mat);
+    m.position.set((x0+x1)/2, (y0+y1)/2, (z0+z1)/2);
+    m.castShadow = !mat.transparent; m.receiveShadow = true;
+    (grp || curItem || furn).add(m);
+    return m;
+  }
+  function cyl(x,z,r,y0,y1,mat){
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, y1-y0, 24), mat);
+    m.position.set(x, (y0+y1)/2, z); m.castShadow = true; m.receiveShadow = true;
+    (curItem || furn).add(m);
+  }
+
+  // Bathroom: narrow, fittings in one line along the left wall
+  floorSlab(3.575,BX-0.05, 0,0.008, 0.075,BZ-0.05, fm.tile);
+  item('Walk-in shower', '1.2 × 0.85 m tray, 2.0 m screen');
+  bx(3.575,BX-0.05, 0,0.06, 0.075,0.92, fm.white).userData.floor = true;
+  bx(3.575,4.2, 0.06,1.95, 0.91,0.93, mats.glass);
+  bx(4.13,4.17, 1.0,1.95, 0.075,0.11, fm.steel);
+  bx(4.05,4.25, 1.93,1.95, 0.11,0.35, fm.steel);
+  done();
+  item('Toilet', '0.4 × 0.65 m');
+  bx(3.575,3.775, 0.4,0.8, 1.1,1.5, fm.white);
+  bx(3.775,4.225, 0,0.4, 1.15,1.45, fm.white);
+  done();
+  item('Sink and vanity', '0.45 × 0.55 m, basin 0.85 m high');
+  bx(3.575,4.0, 0.45,0.8, 1.75,2.3, fm.white);
+  bx(3.575,4.03, 0.8,0.85, 1.73,2.32, fm.white);
+  bx(3.6,3.64, 0.85,1.0, 2.0,2.05, fm.steel);
+  bx(3.575,3.59, 1.15,1.8, 1.78,2.27, fm.mirror);
+  done();
+
+  // Kitchen (back right of Room B)
+  item('Fridge freezer', '0.65 × 0.65 m, 2.0 m high');
+  bx(6.9,7.53, 0,2.0, 0.075,0.725, fm.steel);
+  bx(6.9,7.53, 0.86,0.875, 0.725,0.73, fm.black);         // fridge / freezer split
+  bx(7.43,7.46, 1.05,1.75, 0.765,0.785, fm.black);        // fridge handle
+  bx(7.43,7.46, 0.35,0.78, 0.765,0.785, fm.black);        // freezer handle
+  [[1.08],[1.72],[0.38],[0.75]].forEach(([y]) => bx(7.435,7.455, y-0.015,y+0.015, 0.725,0.765, fm.black));
+  done();
+  item('Kitchen units', '3.9 m long, 0.6 m deep, 0.9 m worktop');
+  bx(7.55,11.425, 0,0.86, 0.075,0.675, fm.cab);
+  bx(7.55,11.425, 0.86,0.9, 0.075,0.7, fm.top);
+  bx(8.0,8.7, 0.9,0.905, 0.15,0.55, fm.steel);            // sink
+  bx(8.32,8.38, 0.9,1.15, 0.12,0.18, fm.steel);           // tap
+  bx(8.32,8.38, 1.1,1.15, 0.18,0.32, fm.steel);
+  bx(9.9,10.5, 0.9,0.906, 0.15,0.6, fm.black);            // hob
+  bx(9.9,10.5, 0.15,0.75, 0.675,0.685, fm.black);         // oven
+  done();
+  bx(7.55,9.85, 1.45,2.2, 0.075,0.425, fm.cab, tall);     // wall cabinets
+  bx(10.55,11.425, 1.45,2.2, 0.075,0.425, fm.cab, tall);
+  bx(9.85,10.55, 1.6,2.2, 0.075,0.5, fm.steel, tall);     // hood
+  item('Kitchen island / table', '1.7 × 1.05 m, 0.9 m high');
+  bx(8.6,10.2, 0,0.86, 1.75,2.45, fm.cab);
+  bx(8.55,10.25, 0.86,0.9, 1.7,2.75, fm.top);
+  done();
+  item('Bar stools', '3 stools, ø 0.38 m, seat 0.68 m high');
+  [8.95,9.4,9.85].forEach(x => {
+    cyl(x,3.0, 0.18, 0,0.02, fm.black);
+    cyl(x,3.0, 0.03, 0.02,0.62, fm.steel);
+    cyl(x,3.0, 0.19, 0.62,0.68, fm.wood);
+  });
+  done();
+
+  // Cabinet doors: seams and bar handles
+  {
+    const hz = 0.675;   // base unit front
+    const baseDoors = [[7.55,8.15],[8.15,8.75],[8.75,9.35],[9.35,9.9],[10.5,10.96],[10.96,11.425]];
+    baseDoors.forEach(([x0,x1]) => {
+      bx(x0-0.003,x0+0.003, 0.1,0.85, hz,hz+0.006, fm.black);
+      const c = (x0+x1)/2;
+      bx(c-0.08,c+0.08, 0.74,0.755, hz+0.025,hz+0.04, fm.steel);          // bar
+      bx(c-0.07,c-0.06, 0.74,0.755, hz,hz+0.025, fm.steel);              // standoffs
+      bx(c+0.06,c+0.07, 0.74,0.755, hz,hz+0.025, fm.steel);
+    });
+    bx(7.55,11.425, 0,0.1, hz-0.01,hz, fm.black);                        // plinth
+    // wall cabinets: vertical handles near the bottom edge
+    const wz = 0.425;
+    [[7.55,8.125],[8.125,8.7],[8.7,9.275],[9.275,9.85],[10.55,10.99],[10.99,11.425]].forEach(([x0,x1], i) => {
+      bx(x0-0.003,x0+0.003, 1.45,2.2, wz,wz+0.006, fm.black, tall);
+      const hx = i % 2 === 0 ? x1-0.05 : x0+0.05;
+      bx(hx-0.007,hx+0.007, 1.5,1.66, wz+0.025,wz+0.04, fm.steel, tall);
+      bx(hx-0.007,hx+0.007, 1.51,1.52, wz,wz+0.025, fm.steel, tall);
+      bx(hx-0.007,hx+0.007, 1.64,1.65, wz,wz+0.025, fm.steel, tall);
+    });
+    // island: cupboard doors on the kitchen side
+    const iz = 1.75;
+    [[8.6,9.0],[9.0,9.4],[9.4,9.8],[9.8,10.2]].forEach(([x0,x1]) => {
+      bx(x0-0.003,x0+0.003, 0.1,0.85, iz-0.006,iz, fm.black);
+      const c = (x0+x1)/2;
+      bx(c-0.07,c+0.07, 0.74,0.755, iz-0.04,iz-0.025, fm.steel);
+      bx(c-0.06,c-0.05, 0.74,0.755, iz-0.025,iz, fm.steel);
+      bx(c+0.05,c+0.06, 0.74,0.755, iz-0.025,iz, fm.steel);
+    });
+  }
+
+  // Kitchen accessories
+  function sph(x, y, z, r, col){
+    const m = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), new THREE.MeshStandardMaterial({color:col, roughness:0.55}));
+    m.position.set(x, y, z); m.castShadow = true; curItem.add(m); return m;
+  }
+  item('Fruit bowl', 'ø 0.28 m bowl with fruit');
+  {
+    const bowl = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.07, 0.08, 28, 1, true),
+      new THREE.MeshStandardMaterial({color:0xeeeae2, roughness:0.4, side:THREE.DoubleSide}));
+    bowl.position.set(9.4, 0.94, 2.2); bowl.castShadow = true; curItem.add(bowl);
+    cyl(9.4, 2.2, 0.07, 0.9, 0.906, fm.white);
+    const cols = [0xf08a24, 0xc8302b, 0x8cbf3f, 0xf0a030, 0xb52a2a, 0xe9762a];
+    [[9.36,2.15,0.045],[9.45,2.17,0.042],[9.4,2.26,0.044],[9.31,2.24,0.04],[9.48,2.25,0.038],[9.41,2.2,0.042]]
+      .forEach(([x,z,r], i) => sph(x, 0.955 + (i === 5 ? 0.055 : 0), z, r, cols[i]));
+    const ban = new THREE.Mesh(new THREE.TorusGeometry(0.09, 0.018, 8, 16, Math.PI*0.7),
+      new THREE.MeshStandardMaterial({color:0xf2d24b, roughness:0.6}));
+    ban.position.set(9.37, 1.0, 2.24); ban.rotation.set(-1.2, 0.3, 0.6); ban.castShadow = true; curItem.add(ban);
+  }
+  done();
+  item('Kettle', '1.7 L electric kettle');
+  cyl(9.25, 0.35, 0.085, 0.9, 0.92, fm.black);
+  {
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.072, 0.088, 0.2, 24), fm.steel);
+    body.position.set(9.25, 1.02, 0.35); body.castShadow = true; curItem.add(body);
+    const lid = new THREE.Mesh(new THREE.SphereGeometry(0.072, 20, 10, 0, Math.PI*2, 0, Math.PI/2), fm.steel);
+    lid.position.set(9.25, 1.12, 0.35); curItem.add(lid);
+    cyl(9.25, 0.35, 0.015, 1.18, 1.205, fm.black);
+    const handle = new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.013, 8, 16, Math.PI), fm.black);
+    handle.rotation.z = -Math.PI/2; handle.position.set(9.33, 1.03, 0.35); curItem.add(handle);
+    const spout = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.02, 0.09, 12), fm.steel);
+    spout.rotation.z = Math.PI/2 + 0.7; spout.position.set(9.16, 1.07, 0.35); curItem.add(spout);
+  }
+  done();
+  item('Knife block', 'Set of 6 knives');
+  {
+    const kb = new THREE.Group(); kb.position.set(10.95, 0.9, 0.3); kb.rotation.x = -0.3;
+    const blk = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.22, 0.11), fm.wood);
+    blk.position.y = 0.11; blk.castShadow = true; kb.add(blk);
+    [-0.04, 0, 0.04].forEach(x => [-0.025, 0.025].forEach(z => {
+      const h = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.1, 0.028), fm.black);
+      h.position.set(x, 0.27, z); h.castShadow = true; kb.add(h);
+      const rv = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, 0.03, 6), fm.steel);
+      rv.rotation.x = Math.PI/2; rv.position.set(x, 0.27, z); kb.add(rv);
+    }));
+    curItem.add(kb);
+  }
+  done();
+
+  // Hallway cupboard on the far right wall, next to the door
+  item('Hallway cupboard', 'Coats and shoes, 1.2 × 0.45 m, 2.1 m high');
+  bx(10.975,11.425, 0,2.1, 1.8,3.0, fm.oak);
+  bx(10.965,10.975, 0.05,2.05, 2.395,2.405, fm.black);    // door seam
+  bx(10.955,10.975, 0.9,1.25, 2.33,2.35, fm.steel);       // handles
+  bx(10.955,10.975, 0.9,1.25, 2.45,2.47, fm.steel);
+  bx(10.965,10.975, 0.35,0.36, 1.82,2.98, fm.black);      // shoe drawer line
+  done();
+
+  // Lounge (middle, facing the TV between the glass doors)
+  floorSlab(5.75,8.15, 0,0.01, 3.15,4.2, fm.rug);
+  item('Sofa', '1.8 × 0.9 m, 0.85 m high');
+  bx(6.05,7.85, 0,0.42, 2.05,2.95, fm.sofa);
+  bx(6.05,7.85, 0.42,0.85, 2.05,2.29, fm.sofa);
+  bx(6.05,6.25, 0.42,0.62, 2.05,2.95, fm.sofa);
+  bx(7.65,7.85, 0.42,0.62, 2.05,2.95, fm.sofa);
+  bx(6.27,6.93, 0.42,0.5, 2.29,2.91, fm.cushion);
+  bx(6.97,7.63, 0.42,0.5, 2.29,2.91, fm.cushion);
+  done();
+  item('Coffee table', '1.0 × 0.45 m, 0.42 m high');
+  bx(6.45,7.45, 0.38,0.42, 3.25,3.7, fm.wood);
+  [[6.5,3.3],[7.4,3.3],[6.5,3.65],[7.4,3.65]].forEach(([x,z]) => bx(x-0.025,x+0.025, 0.01,0.38, z-0.025,z+0.025, fm.wood));
+  done();
+  item('TV unit', '1.2 × 0.43 m, 0.45 m high, 40-inch TV');
+  bx(6.35,7.55, 0,0.45, 4.0,4.425, fm.wood);
+  bx(6.5,7.4, 0.7,1.22, 4.32,4.36, fm.black);
+  bx(6.92,6.98, 0.45,0.7, 4.32,4.36, fm.black);
+  done();
+
+  // Bedroom (Room A)
+  item('Double bed', '1.4 × 2.0 m');
+  bx(0.65,2.05, 0,0.3, 0.075,2.075, fm.wood);
+  bx(0.6,2.1, 0,1.05, 0.075,0.14, fm.fabric);
+  bx(0.68,2.02, 0.3,0.52, 0.14,2.05, fm.white);
+  bx(0.66,2.04, 0.52,0.56, 0.8,2.07, fm.duvet);
+  bx(0.75,1.3, 0.52,0.64, 0.2,0.55, fm.white);
+  bx(1.4,1.95, 0.52,0.64, 0.2,0.55, fm.white);
+  done();
+  [[0.15,0.6],[2.1,2.55]].forEach(([x0,x1]) => {
+    item('Nightstand', '0.45 × 0.4 m, 0.55 m high');
+    bx(x0,x1, 0,0.55, 0.075,0.475, fm.wood);
+    cyl((x0+x1)/2, 0.28, 0.06, 0.55,0.75, fm.steel);
+    cyl((x0+x1)/2, 0.28, 0.12, 0.75,0.95, fm.white);
+    done();
+  });
+  item('Wardrobe', '1.2 × 0.6 m, 2.1 m high');
+  bx(2.825,3.425, 0,2.1, 0.15,1.35, fm.white);
+  bx(2.815,2.825, 0.05,2.05, 0.745,0.755, fm.black);
+  bx(2.805,2.825, 0.9,1.2, 0.66,0.68, fm.steel);
+  bx(2.805,2.825, 0.9,1.2, 0.82,0.84, fm.steel);
+  done();
+  item('Desk', '1.2 × 0.6 m, 0.75 m high');
+  bx(0.075,0.675, 0.72,0.75, 2.3,3.5, fm.wood);
+  bx(0.1,0.65, 0,0.72, 2.3,2.34, fm.white);
+  bx(0.1,0.65, 0,0.72, 3.46,3.5, fm.white);
+  bx(0.38,0.53, 0.75,0.765, 2.68,3.12, fm.white);
+  done();
+  item('Monitor', '27-inch, 0.62 m wide');
+  bx(0.17,0.2, 0.95,1.32, 2.59,3.21, fm.black);
+  bx(0.2,0.24, 0.75,0.97, 2.88,2.92, fm.black);
+  bx(0.15,0.35, 0.75,0.76, 2.8,3.0, fm.black);
+  done();
+  item('Desk chair', '0.45 × 0.45 m seat');
+  bx(0.8,1.25, 0.45,0.52, 2.65,3.1, fm.black);
+  bx(1.2,1.26, 0.52,1.0, 2.67,3.08, fm.black);
+  cyl(1.02,2.88, 0.03, 0.08,0.45, fm.steel);
+  cyl(1.02,2.88, 0.28, 0.04,0.08, fm.black);
+  done();
+
+  // ---- Roof: barrel vault over Room B, flat roof over the bedroom ----
+  const roofG = new THREE.Group(); model.add(roofG);
+  const RISE = 0.9, W0 = -T/2, W1 = 4.5 + T/2, ZC = 2.25, HW = (W1-W0)/2;
+  const RR = (RISE*RISE + HW*HW) / (2*RISE), YC = FULL_H + RISE - RR, PHI = Math.asin(HW/RR);
+  function arc(r, a0, a1, n, skipEnds){
+    const p = [];
+    for (let i = skipEnds ? 1 : 0; i <= (skipEnds ? n-1 : n); i++){
+      const a = a0 + (a1-a0)*i/n;
+      p.push([ZC + r*Math.sin(a), YC + r*Math.cos(a)]);
+    }
+    return p;
+  }
+  // vault shell (shape drawn in z/y, extruded along x)
+  const shell = new THREE.Shape();
+  const RO = RR + 0.12, PHO = PHI + 0.035;
+  shell.moveTo(W0, FULL_H);
+  arc(RO, -PHO, PHO, 48).forEach(([z,y]) => shell.lineTo(z, y));
+  shell.lineTo(W1, FULL_H);
+  arc(RR, PHI, -PHI, 48, true).forEach(([z,y]) => shell.lineTo(z, y));
+  const X0 = 3.5 - T/2 - 0.15, X1 = 11.5 + T/2 + 0.15;
+  const vault = new THREE.Mesh(new THREE.ExtrudeGeometry(shell, {depth:X1-X0, bevelEnabled:false}), mats.roof);
+  vault.rotation.y = -Math.PI/2; vault.position.x = X1;
+  roofG.add(vault);
+
+  // gable ends with their windows
+  function gableShape(holes){
+    const s = new THREE.Shape();
+    s.moveTo(W0, FULL_H); s.lineTo(W1, FULL_H);
+    arc(RR, PHI, -PHI, 48, true).forEach(([z,y]) => s.lineTo(z, y));
+    holes().forEach(h => s.holes.push(h));
+    return s;
+  }
+  function gable(x, outward, holes){
+    const inner = new THREE.Mesh(new THREE.ExtrudeGeometry(gableShape(holes), {depth:T, bevelEnabled:false}), mats.wall);
+    inner.rotation.y = -Math.PI/2; inner.position.x = x + T/2;
+    roofG.add(inner);
+    const face = new THREE.Mesh(new THREE.ShapeGeometry(gableShape(holes)), mats.stoneDS);
+    face.rotation.y = -Math.PI/2; face.position.x = x + outward*(T/2 + 0.004);
+    roofG.add(face);
+  }
+  // left gable: small rectangular window just above the flat roof, towards the front
+  const RW = {z0:0.9, z1:1.45, y0:2.71, y1:3.0};
+  gable(3.5, -1, () => {
+    const p = new THREE.Path();
+    p.moveTo(RW.z0, RW.y0); p.lineTo(RW.z1, RW.y0); p.lineTo(RW.z1, RW.y1); p.lineTo(RW.z0, RW.y1); p.lineTo(RW.z0, RW.y0);
+    return [p];
+  });
+  bx(3.49,3.51, RW.y0,RW.y1, RW.z0,RW.z1, mats.glass, roofG);
+  const fb = 0.06, fx0 = 3.5 - T/2 - 0.025, fx1 = 3.5 - T/2;
+  bx(fx0,fx1, RW.y0-fb,RW.y1+fb, RW.z0-fb,RW.z0, mats.white, roofG);
+  bx(fx0,fx1, RW.y0-fb,RW.y1+fb, RW.z1,RW.z1+fb, mats.white, roofG);
+  bx(fx0,fx1, RW.y1,RW.y1+fb, RW.z0,RW.z1, mats.white, roofG);
+  bx(fx0,fx1, RW.y0-fb,RW.y0, RW.z0,RW.z1, mats.white, roofG);
+  // right gable: oval (egg) window
+  const OV = {z:2.25, y:2.95, rz:0.3, ry:0.2};
+  gable(11.5, 1, () => {
+    const p = new THREE.Path();
+    p.absellipse(OV.z, OV.y, OV.rz, OV.ry, 0, Math.PI*2, false);
+    return [p];
+  });
+  const ovGlass = new THREE.Mesh(new THREE.CircleGeometry(1, 48),
+    new THREE.MeshStandardMaterial({color:0x9cc7de, roughness:0.1, transparent:true, opacity:0.38, side:THREE.DoubleSide}));
+  ovGlass.scale.set(OV.rz, OV.ry, 1); ovGlass.rotation.y = Math.PI/2; ovGlass.position.set(11.5, OV.y, OV.z);
+  roofG.add(ovGlass);
+  const ovRing = new THREE.Mesh(new THREE.RingGeometry(1, 1.28, 48),
+    new THREE.MeshStandardMaterial({color:0xf7f6f2, roughness:0.6, side:THREE.DoubleSide}));
+  ovRing.scale.set(OV.rz, OV.ry, 1); ovRing.rotation.y = Math.PI/2; ovRing.position.set(11.5 + T/2 + 0.012, OV.y, OV.z);
+  roofG.add(ovRing);
+
+  // patterned eave bands along the vault
+  function trimBox(x0,x1,y0,y1,z0,z1){
+    const m = bx(x0,x1,y0,y1,z0,z1, mats.trim, roofG);
+    scaleUV(m.geometry, x1-x0, y1-y0, z1-z0, x0, 0);
+  }
+  trimBox(3.5-T/2, 11.5+T/2, FULL_H-0.13, FULL_H, 4.5+T/2, 4.5+T/2+0.015);
+  trimBox(3.5-T/2, 11.5+T/2, FULL_H-0.13, FULL_H, -T/2-0.015, -T/2);
+
+  // flat roof over the bedroom
+  const FR = {x0:-T/2-0.1, x1:3.5-T/2, z0:-T/2-0.1, z1:4.1+T/2+0.1, top:FULL_H+0.14};
+  const NXo = NX - T/2 - 0.1, NZo = NZ + T/2 + 0.1;
+  bx(FR.x0,FR.x1, FULL_H,FR.top, FR.z0,NZo, mats.roof, roofG);
+  bx(NXo,FR.x1, FULL_H,FR.top, NZo-0.01,FR.z1, mats.roof, roofG);
+  trimBox(NXo-0.01,FR.x1, FULL_H,FR.top, FR.z1,FR.z1+0.01);         // front
+  trimBox(FR.x0-0.01,FR.x1, FULL_H,FR.top, FR.z0-0.01,FR.z0);       // back
+  trimBox(FR.x0-0.01,FR.x0, FULL_H,FR.top, FR.z0,NZo);              // left
+  trimBox(FR.x0-0.01,NXo, FULL_H,FR.top, NZo,NZo+0.01);             // notch
+  trimBox(NXo-0.01,NXo, FULL_H,FR.top, NZo,FR.z1);
+  const up = FR.top + 0.07;
+  bx(NXo,FR.x1, FR.top,up, FR.z1-0.08,FR.z1, mats.roof, roofG);     // upstands
+  bx(FR.x0,FR.x1, FR.top,up, FR.z0,FR.z0+0.08, mats.roof, roofG);
+  bx(FR.x0,FR.x0+0.08, FR.top,up, FR.z0,NZo, mats.roof, roofG);
+  bx(FR.x0,NXo+0.08, FR.top,up, NZo-0.08,NZo, mats.roof, roofG);
+  bx(NXo,NXo+0.08, FR.top,up, NZo-0.08,FR.z1, mats.roof, roofG);
+
+  // ---- Mezzanine over the bathroom, reached by a ladder ----
+  const yA = z => YC + Math.sqrt(RR*RR - (z-ZC)*(z-ZC));
+  const MZ = {x0:3.5, x1:5.9, z0:0, z1:4.5, y:DECK};
+  const mezz = [];
+  const grab = () => mezz.push(curItem);
+  item('Mezzanine', '2.4 × 4.5 m deck, 2.1 m up, spans back wall to front wall'); grab();
+  bx(MZ.x0,MZ.x1, DECK-0.1,DECK-0.02, MZ.z0,MZ.z1, fm.white);
+  bx(MZ.x0,MZ.x1, DECK-0.02,DECK, MZ.z0,MZ.z1, fm.oak).userData.floor = true;
+  const railTop = z => Math.min(MZ.y + 0.9, yA(z) - 0.05);
+  function railZ(x, z0, z1){
+    const n = Math.max(1, Math.round((z1-z0)/0.3)); let prev = null;
+    for (let i=0;i<=n;i++){
+      const z = z0 + (z1-z0)*i/n, h = railTop(z);
+      bx(x-0.025,x+0.025, MZ.y,h, z-0.025,z+0.025, fm.wood);
+      if (prev){ const t = Math.min(h, prev.h); bx(x-0.03,x+0.03, t-0.05,t, prev.z,z, fm.wood); }
+      prev = {z, h};
+    }
+  }
+  railZ(MZ.x1-0.03, 0.3, 0.95);              // gap for the ladder between 0.95 and 1.45
+  railZ(MZ.x1-0.03, 1.45, 4.4);
+  done();
+  // bed and nightstands moved towards the front so the gable window is clear
+  const BZ0 = 2.15, BZ1 = 3.55;
+  item('Mezzanine double bed', '1.4 × 2.0 m'); grab();
+  bx(3.575,5.575, MZ.y,MZ.y+0.15, BZ0,BZ1, fm.wood);
+  bx(3.6,5.55, MZ.y+0.15,MZ.y+0.33, BZ0+0.03,BZ1-0.03, fm.white);
+  bx(4.3,5.57, MZ.y+0.33,MZ.y+0.37, BZ0+0.01,BZ1-0.01, fm.duvet);
+  bx(3.65,4.05, MZ.y+0.33,MZ.y+0.43, BZ0+0.1,BZ0+0.65, fm.white);
+  bx(3.65,4.05, MZ.y+0.33,MZ.y+0.43, BZ0+0.75,BZ0+1.3, fm.white);
+  bx(3.575,3.63, MZ.y,MZ.y+0.75, BZ0-0.05,BZ1+0.05, fm.fabric);
+  done();
+  [[BZ0-0.45,BZ0-0.07],[BZ1+0.07,BZ1+0.45]].forEach(([z0,z1]) => {
+    item('Nightstand', '0.38 × 0.35 m, 0.45 m high'); grab();
+    bx(3.6,3.95, MZ.y,MZ.y+0.45, z0,z1, fm.wood);
+    cyl(3.78,(z0+z1)/2, 0.06, MZ.y+0.45,MZ.y+0.6, fm.steel);
+    cyl(3.78,(z0+z1)/2, 0.11, MZ.y+0.6,MZ.y+0.78, fm.white);
+    done();
+  });
+  item('Ladder', 'Wooden ladder, 2.1 m up to the mezzanine'); grab();
+  {
+    const lad = new THREE.Group();
+    const lx0 = 6.2, lx1 = MZ.x1 + 0.02, ltop = DECK + 0.75, lzc = 1.2;
+    const ang = Math.atan2(lx0 - lx1, ltop), LL = Math.hypot(lx0 - lx1, ltop);
+    lad.position.set(lx0, 0, lzc); lad.rotation.z = ang;
+    [-0.2, 0.2].forEach(dz => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(0.045, LL, 0.05), fm.wood);
+      m.position.set(0, LL/2, dz); m.castShadow = true; lad.add(m);
+    });
+    for (let y = 0.3; y < MZ.y / Math.cos(ang); y += 0.28){
+      const m = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.035, 0.4), fm.wood);
+      m.position.set(0, y, 0); m.castShadow = true; lad.add(m);
+    }
+    curItem.add(lad);
+  }
+  done();
+  // built-in wardrobe under the deck, along the bathroom wall from the back wall to the bathroom door
+  item('Built-in wardrobe', '1.55 × 0.6 m, 2.0 m high, sliding doors'); grab();
+  const WZ0 = 0.075, WZ1 = 1.65, WX0 = BX + 0.05, WX1 = BX + 0.65, WH = DECK - 0.1;
+  bx(WX0,WX1-0.04, 0,WH, WZ0,WZ1, fm.white);                       // carcass
+  bx(WX0,WX1, 0,0.08, WZ0,WZ1, fm.black);                           // plinth
+  const pw = (WZ1 - WZ0) / 3 + 0.03;
+  [0,1,2].forEach(i => {                                              // three sliding panels on two tracks
+    const z0 = WZ0 + i*(WZ1-WZ0)/3 - (i ? 0.015 : 0), z1 = Math.min(WZ1, z0 + pw);
+    const x0 = i === 1 ? WX1-0.04 : WX1-0.02, x1 = x0 + 0.02;
+    bx(x0,x1, 0.08,WH-0.02, z0,z1, fm.oak);
+    bx(x1,x1+0.01, 0.9,1.3, i === 0 ? z1-0.06 : z0+0.04, i === 0 ? z1-0.04 : z0+0.06, fm.steel);
+  });
+  bx(WX0,WX1, WH-0.02,WH, WZ0,WZ1, fm.black);                       // top track
+  done();
+  // LED downlights in the bathroom ceiling (underside of the deck)
+  const ledMat = new THREE.MeshStandardMaterial({color:0xffffff, emissive:0xfff3dc, emissiveIntensity:1});
+  item('LED ceiling lights', '3 recessed downlights'); grab();
+  [0.55, 1.3, 2.05].forEach(z => {
+    const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, 0.006, 24), fm.steel);
+    rim.position.set(4.16, DECK-0.103, z); curItem.add(rim);
+    const led = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.006, 24), ledMat);
+    led.position.set(4.16, DECK-0.107, z); curItem.add(led);
+  });
+  { const pl = new THREE.PointLight(0xfff1dc, 0.7, 3.2, 2); pl.position.set(4.16, DECK-0.3, 1.3); curItem.add(pl); }
+  done();
+  mezz.forEach(g => tall.add(g));
+
+  // two pendant lights over the kitchen island, hung from the vault
+  item('Pendant lights', '2 pendants, shade ø 0.3 m, 0.75 m above the island');
+  {
+    const shadeMat = new THREE.MeshStandardMaterial({color:0x22262b, roughness:0.5, side:THREE.DoubleSide});
+    const bulbMat = new THREE.MeshStandardMaterial({color:0xffffff, emissive:0xffd9a0, emissiveIntensity:1});
+    [9.0, 9.8].forEach(x => {
+      const z = 2.2, top = yA(z), sb = 1.65;
+      const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, top - (sb + 0.2), 6), fm.black);
+      cable.position.set(x, (top + sb + 0.2)/2, z); curItem.add(cable);
+      const rose = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.03, 20), fm.black);
+      rose.position.set(x, top - 0.015, z); curItem.add(rose);
+      const shade = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.15, 0.2, 28, 1, true), shadeMat);
+      shade.position.set(x, sb + 0.1, z); curItem.add(shade);
+      const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.045, 16, 12), bulbMat);
+      bulb.position.set(x, sb + 0.05, z); curItem.add(bulb);
+      const pl = new THREE.PointLight(0xffd9a6, 0.55, 3.5, 2); pl.position.set(x, sb - 0.05, z); curItem.add(pl);
+    });
+    const g = curItem; done(); roofG.add(g);   // shown with the roof, like the ceiling it hangs from
+  }   // hidden with the tall items when walls are cut down
+
+  roofG.traverse(o => { if (o.isMesh) o.castShadow = !(o.material && o.material.transparent); });
+  const amb = new THREE.AmbientLight(0xffffff, 0); scene.add(amb);
+  const fill = new THREE.DirectionalLight(0xfff4e6, 0); fill.position.set(6, 5, -9); scene.add(fill);
+  let roofOn = false, textOff = false;
+  function syncVis(){
+    roofG.visible = (mode === 'walk' || roofOn) && wallH === FULL_H;
+    amb.intensity = roofG.visible ? 0.12 : 0;
+    fill.intensity = roofG.visible ? 0.35 : 0;
+    labels.forEach(l => l.visible = mode === 'orbit' && !anim && !roofG.visible && !textOff);
+    hint.hidden = textOff;
+    document.querySelector('.rooms').hidden = textOff;
+  }
+
+  // ---- Camera modes: orbit overview and first-person walk ----
+  const OVERVIEW = {pos:new THREE.Vector3(7.5,10.5,13), target:new THREE.Vector3(0,0.6,0.5)};
+  const TOP = {pos:new THREE.Vector3(0,18,0.01), target:new THREE.Vector3(0,0,0)};
+  // stand points in plan coordinates; yaw 0 looks to the back wall, PI/2 looks left
+  const SPOTS = {
+    entrance: {x:10.45, z:3.75, yaw:Math.PI/2, pitch:-0.12},
+    lounge:   {x:7.4,   z:1.5,  yaw:Math.PI-0.15, pitch:-0.18},
+    kitchen:  {x:9.3,   z:3.75, yaw:0.1,       pitch:-0.3},
+    bathroom: {x:4.4,   z:2.05, yaw:0.3,       pitch:-0.32},
+    bedroom:  {x:2.0,   z:3.5,  yaw:0.25,      pitch:-0.22},
+    mezzanine:{x:5.65,  z:1.3,  y:3.05, yaw:2.2,   pitch:-0.38}
+  };
+  let mode = 'orbit';      // 'orbit' | 'walk'
+  let yaw = 0, pitch = 0;
+  let anim = null;
+  const WALK_FOV = 70, ORBIT_FOV = 42;
+
+  const hint = document.getElementById('hint');
+  function setHint(){
+    hint.textContent = mode === 'walk'
+      ? 'Drag to look around. Click the floor to walk there. Esc to leave.'
+      : 'Hover furniture for sizes. Drag to orbit, scroll to zoom, right-drag to pan.';
+  }
+
+  function quatFromYawPitch(y, p){ return new THREE.Quaternion().setFromEuler(new THREE.Euler(p, y, 0, 'YXZ')); }
+  function quatLookAt(pos, target){
+    const c = new THREE.PerspectiveCamera(); c.position.copy(pos); c.lookAt(target); return c.quaternion.clone();
+  }
+  function animateTo(pos, quat, fov, dur, onDone){
+    anim = {t0:performance.now(), dur, p0:camera.position.clone(), p1:pos.clone(),
+            q0:camera.quaternion.clone(), q1:quat.clone(), f0:camera.fov, f1:fov, onDone};
+  }
+  const ease = t => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
+
+  function goWalk(name){
+    const s = SPOTS[name];
+    mode = 'walk'; controls.enabled = false;
+    syncVis();
+    show(null); setHint();
+    yaw = s.yaw; pitch = s.pitch;
+    const pos = new THREE.Vector3(s.x + OFF[0], s.y || EYE, s.z + OFF[1]);
+    animateTo(pos, quatFromYawPitch(yaw, pitch), WALK_FOV, 1600);
+  }
+  function goOrbit(view){
+    mode = 'orbit'; marker.visible = false; show(null);
+    labels.forEach(l => l.visible = false);
+    sel.value = 'overview';
+    animateTo(view.pos, quatLookAt(view.pos, view.target), ORBIT_FOV, 1400, () => {
+      controls.target.copy(view.target);
+      controls.enabled = true;
+      syncVis();
+      controls.update();
+    });
+    setHint();
+  }
+
+  // ---- Hover popover, floor marker, click to move ----
+  const tip = document.getElementById('tip');
+  const ray = new THREE.Raycaster();
+  const ptr = new THREE.Vector2();
+  const hl = new THREE.Box3Helper(new THREE.Box3(), 0x2f5d8a);
+  hl.visible = false; scene.add(hl);
+  const marker = new THREE.Mesh(new THREE.RingGeometry(0.16, 0.22, 40),
+    new THREE.MeshBasicMaterial({color:0x2f5d8a, transparent:true, opacity:0.85, depthTest:false}));
+  marker.rotation.x = -Math.PI/2; marker.renderOrder = 11; marker.visible = false;
+  scene.add(marker);
+
+  function firstHit(cx, cy){
+    const r = renderer.domElement.getBoundingClientRect();
+    ptr.set(((cx-r.left)/r.width)*2-1, -((cy-r.top)/r.height)*2+1);
+    ray.setFromCamera(ptr, camera);
+    const seen = o => { for (; o; o = o.parent) if (!o.visible) return false; return true; };
+    const hits = ray.intersectObjects([built, furn, tall, floorsG, roofG], true).filter(h => seen(h.object));
+    return hits[0] || null;
+  }
+  function itemOf(hit){
+    let o = hit && hit.object;
+    while (o && !(o.userData && o.userData.info)) o = o.parent;
+    return o || null;
+  }
+  function show(it, cx, cy){
+    if (!it){ tip.hidden = true; hl.visible = false; return; }
+    tip.innerHTML = '<b></b><span></span>';
+    tip.querySelector('b').textContent = it.userData.info.name;
+    tip.querySelector('span').textContent = it.userData.info.dims;
+    tip.hidden = false;
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    let x = cx + 14, y = cy + 14;
+    if (x + w > window.innerWidth - 8) x = cx - w - 14;
+    if (y + h > window.innerHeight - 8) y = cy - h - 14;
+    tip.style.left = Math.max(8, x) + 'px'; tip.style.top = Math.max(8, y) + 'px';
+    hl.box.setFromObject(it); hl.visible = true;
+  }
+  function hover(cx, cy){
+    const hit = firstHit(cx, cy);
+    const it = itemOf(hit);
+    show(it, cx, cy);
+    const onFloor = mode === 'walk' && !anim && hit && hit.object.userData.floor;
+    marker.visible = !!onFloor;
+    if (onFloor) marker.position.set(hit.point.x, hit.point.y + 0.012, hit.point.z);
+    renderer.domElement.style.cursor = (it || onFloor) ? 'pointer' : (mode === 'walk' ? 'grab' : '');
+  }
+  function walkTo(point){
+    const zM = point.z - OFF[1];
+    const pos = new THREE.Vector3(point.x, point.y > 1 ? Math.min(point.y + 1.0, yA(zM) - 0.2) : EYE, point.z);
+    const dist = pos.distanceTo(camera.position);
+    marker.visible = false;
+    animateTo(pos, camera.quaternion, camera.fov, Math.min(1400, Math.max(450, dist*380)));
+  }
+
+  let down = null, dragging = false, last = null;
+  const el = renderer.domElement;
+  el.addEventListener('pointerdown', e => {
+    down = [e.clientX, e.clientY]; last = [e.clientX, e.clientY]; dragging = false;
+    if (mode === 'walk') el.style.cursor = 'grabbing';
+  });
+  el.addEventListener('pointermove', e => {
+    if (down && Math.hypot(e.clientX-down[0], e.clientY-down[1]) > 4) dragging = true;
+    if (down && mode === 'walk' && !anim){
+      const k = e.pointerType === 'mouse' ? 0.0045 : 0.006;
+      yaw += (e.clientX - last[0]) * k;
+      pitch = Math.max(-1.3, Math.min(1.3, pitch + (e.clientY - last[1]) * k));
+      camera.quaternion.copy(quatFromYawPitch(yaw, pitch));
+      show(null); marker.visible = false;
+    }
+    last = [e.clientX, e.clientY];
+    if (e.pointerType !== 'mouse') return;
+    if (e.buttons){ show(null); return; }
+    hover(e.clientX, e.clientY);
+  });
+  el.addEventListener('pointerup', e => {
+    if (!dragging && !anim){
+      const hit = firstHit(e.clientX, e.clientY);
+      if (mode === 'walk' && hit && hit.object.userData.floor) walkTo(hit.point);
+      else if (e.pointerType !== 'mouse') show(itemOf(hit), e.clientX, e.clientY);
+    }
+    down = null;
+    if (e.pointerType === 'mouse') hover(e.clientX, e.clientY);
+  });
+  el.addEventListener('pointerleave', () => { show(null); marker.visible = false; });
+
+  // ---- Theme ----
+  function applyTheme(){
+    const cs = getComputedStyle(document.documentElement);
+    scene.background = new THREE.Color(cs.getPropertyValue('--bg').trim() || '#dfe4e8');
+    groundMat.color.set(cs.getPropertyValue('--ground').trim() || '#cfd5da');
+  }
+  applyTheme();
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
+
+  // ---- UI ----
+  const sel = document.getElementById('goto');
+  sel.addEventListener('change', () => {
+    if (sel.value === 'overview') goOrbit(OVERVIEW); else goWalk(sel.value);
+    sel.blur();
+  });
+  const btnCut = document.getElementById('btnCut');
+  btnCut.addEventListener('click', () => {
+    const on = wallH === FULL_H;
+    wallH = on ? 1.0 : FULL_H;
+    tall.visible = !on;
+    btnCut.setAttribute('aria-pressed', String(on));
+    build(); syncVis();
+  });
+  const btnText = document.getElementById('btnText');
+  btnText.addEventListener('click', () => {
+    textOff = !textOff;
+    btnText.setAttribute('aria-pressed', String(textOff));
+    btnText.textContent = textOff ? 'Show text' : 'Hide text';
+    syncVis();
+  });
+  const btnRoof = document.getElementById('btnRoof');
+  btnRoof.addEventListener('click', () => {
+    roofOn = !roofOn;
+    btnRoof.setAttribute('aria-pressed', String(roofOn));
+    syncVis();
+  });
+  document.getElementById('btnTop').addEventListener('click', () => goOrbit(TOP));
+  document.getElementById('btnReset').addEventListener('click', () => goOrbit(OVERVIEW));
+  window.addEventListener('keydown', e => { if (e.key === 'Escape' && mode === 'walk') goOrbit(OVERVIEW); });
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // initial view
+  camera.position.copy(OVERVIEW.pos);
+  controls.target.copy(OVERVIEW.target);
+  controls.update();
+  setHint();
+  syncVis();
+
+  // ---- VR walk-through (WebXR, e.g. Meta Quest Browser) ----
+  renderer.xr.enabled = true;
+  const rig = new THREE.Group(); scene.add(rig); rig.add(camera);
+  const vrBtn = document.getElementById('btnVR');
+  const vrRay = new THREE.Raycaster(), tmpM = new THREE.Matrix4(), Y = new THREE.Vector3(0,1,0);
+  const visible = o => { for (; o; o = o.parent) if (!o.visible) return false; return true; };
+  const ctrls = [0, 1].map(i => {
+    const c = renderer.xr.getController(i);
+    const line = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, -1)]),
+      new THREE.LineBasicMaterial({color:0x7fb0de}));
+    line.scale.z = 5; c.add(line); c.userData.line = line;
+    c.addEventListener('selectend', () => { if (c.userData.target) vrTeleport(c.userData.target); });
+    rig.add(c);
+    const grip = renderer.xr.getControllerGrip(i);
+    grip.add(new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.03, 0.12), new THREE.MeshStandardMaterial({color:0x2f3a44})));
+    rig.add(grip);
+    return c;
+  });
+  const headPos = () => new THREE.Vector3().setFromMatrixPosition(renderer.xr.getCamera(camera).matrixWorld);
+  function vrTeleport(p){
+    const head = headPos();
+    rig.position.x += p.x - head.x; rig.position.z += p.z - head.z;
+    rig.position.y = p.y > 1 ? p.y : 0;        // up on the mezzanine deck or down on the ground floor
+  }
+  function snapTurn(a){
+    const head = headPos(), v = rig.position.clone().sub(head).applyAxisAngle(Y, a);
+    rig.position.copy(head).add(v); rig.rotation.y += a;
+  }
+  const turnLatch = {};
+  function vrUpdate(){
+    let tgt = null;
+    ctrls.forEach(c => {
+      tmpM.identity().extractRotation(c.matrixWorld);
+      vrRay.ray.origin.setFromMatrixPosition(c.matrixWorld);
+      vrRay.ray.direction.set(0, 0, -1).applyMatrix4(tmpM);
+      const h = vrRay.intersectObjects([built, furn, tall, floorsG, roofG], true).filter(x => visible(x.object))[0];
+      c.userData.target = h && h.object.userData.floor ? h.point.clone() : null;
+      c.userData.line.scale.z = h ? h.distance : 5;
+      if (c.userData.target) tgt = c.userData.target;
+    });
+    marker.visible = !!tgt;
+    if (tgt) marker.position.set(tgt.x, tgt.y + 0.012, tgt.z);
+    const session = renderer.xr.getSession();
+    if (session) for (const src of session.inputSources){
+      const gp = src.gamepad; if (!gp || gp.axes.length < 4) continue;
+      const x = gp.axes[2], k = src.handedness;
+      if (Math.abs(x) > 0.7 && !turnLatch[k]){ snapTurn(x > 0 ? -Math.PI/6 : Math.PI/6); turnLatch[k] = true; }
+      else if (Math.abs(x) < 0.3) turnLatch[k] = false;
+    }
+  }
+  async function enterVR(){
+    const session = await navigator.xr.requestSession('immersive-vr', {optionalFeatures:['local-floor', 'bounded-floor']});
+    renderer.xr.setReferenceSpaceType('local-floor');
+    await renderer.xr.setSession(session);
+    anim = null; mode = 'walk'; controls.enabled = false; show(null); syncVis();
+    camera.position.set(0, 0, 0); camera.quaternion.identity();
+    const s = SPOTS.lounge;
+    rig.position.set(s.x + OFF[0], 0, s.z + OFF[1]); rig.rotation.set(0, s.yaw, 0);
+    renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = true;   // static scene, lighter on the headset
+    vrBtn.textContent = 'Exit VR';
+    session.addEventListener('end', () => {
+      rig.position.set(0, 0, 0); rig.rotation.set(0, 0, 0);
+      renderer.shadowMap.autoUpdate = true;
+      camera.fov = ORBIT_FOV; camera.updateProjectionMatrix();
+      camera.position.copy(OVERVIEW.pos); camera.quaternion.copy(quatLookAt(OVERVIEW.pos, OVERVIEW.target));
+      mode = 'orbit'; controls.target.copy(OVERVIEW.target); controls.enabled = true;
+      sel.value = 'overview'; marker.visible = false; vrBtn.textContent = 'Enter VR';
+      syncVis(); setHint();
+    });
+  }
+  if (navigator.xr && navigator.xr.isSessionSupported){
+    navigator.xr.isSessionSupported('immersive-vr').then(ok => { vrBtn.hidden = !ok; }).catch(() => {});
+  }
+  vrBtn.addEventListener('click', () => {
+    const s = renderer.xr.getSession();
+    if (s) s.end();
+    else enterVR().catch(err => { hint.hidden = false; hint.textContent = 'Could not start VR: ' + err.message; });
+  });
+
+  renderer.setAnimationLoop(function loop(){
+    if (renderer.xr.isPresenting){ vrUpdate(); renderer.render(scene, camera); return; }
+    if (anim){
+      const t = Math.min(1, (performance.now() - anim.t0) / anim.dur), e = ease(t);
+      camera.position.lerpVectors(anim.p0, anim.p1, e);
+      camera.quaternion.copy(anim.q0).slerp(anim.q1, e);
+      camera.fov = anim.f0 + (anim.f1 - anim.f0) * e;
+      camera.updateProjectionMatrix();
+      if (t >= 1){ const cb = anim.onDone; anim = null; if (cb) cb(); }
+    } else if (mode === 'orbit'){
+      controls.update();
+    }
+    renderer.render(scene, camera);
+  });
+})();
+</script>
+</body>
+</html>
