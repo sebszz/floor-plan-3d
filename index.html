@@ -57,6 +57,12 @@ button{
 }
 button[aria-pressed="true"]{background:var(--btn-on);color:var(--btn-on-text);border-color:transparent}
 button[hidden]{display:none}
+.phead{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.phead h1{margin:0}
+#pbody{margin-top:8px}
+.panel.collapsed{padding:8px 10px 8px 14px}
+.panel.collapsed #pbody{display:none}
+.min{padding:2px 9px;font-size:1rem;line-height:1.4}
 button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .hint[hidden],.rooms[hidden]{display:none}
 .hint{
@@ -78,7 +84,11 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
 <div id="scene"></div>
 
 <div class="panel">
-  <h1>Floor plan, 3D</h1>
+  <div class="phead">
+    <h1>Floor plan, 3D</h1>
+    <button id="btnMin" class="min" aria-expanded="true" aria-controls="pbody" title="Minimise">▾</button>
+  </div>
+  <div id="pbody">
   <ul class="rooms">
     <li><b>Bedroom</b> 3.5 × 4.1 m, 14.4 m²</li>
     <li><b>Room B</b> 8 × 4.5 m, open plan kitchen and lounge</li>
@@ -104,6 +114,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     <button id="btnTop">Top view</button>
     <button id="btnReset">Reset view</button>
     <button id="btnVR" hidden>Enter VR</button>
+  </div>
   </div>
 </div>
 <div class="hint" id="hint"></div>
@@ -1105,6 +1116,18 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     btnCut.setAttribute('aria-pressed', String(on));
     build(); syncVis();
   });
+  // minimise / expand the options box (remembered in this browser)
+  const panel = document.querySelector('.panel'), btnMin = document.getElementById('btnMin');
+  function setMin(on){
+    panel.classList.toggle('collapsed', on);
+    btnMin.textContent = on ? '▸' : '▾';
+    btnMin.title = on ? 'Show options' : 'Minimise';
+    btnMin.setAttribute('aria-expanded', String(!on));
+    try { localStorage.setItem('panelMin', on ? '1' : '0'); } catch (e) {}
+  }
+  btnMin.addEventListener('click', () => setMin(!panel.classList.contains('collapsed')));
+  try { if (localStorage.getItem('panelMin') === '1') setMin(true); } catch (e) {}
+
   const btnText = document.getElementById('btnText');
   btnText.addEventListener('click', () => {
     textOff = !textOff;
