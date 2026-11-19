@@ -207,6 +207,8 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   // ---- Time of day: sun path, colour and sky ----
   // Assumes the front (glass doors) faces south: sun rises on the right-hand side (east), sets on the left (west).
   let tod = 13, envK = 0.5, envMats = null, dayK = 1;
+  let probeDirty = true, probeTimer = 0;
+  function requestProbe(){ clearTimeout(probeTimer); probeTimer = setTimeout(() => { probeDirty = true; }, 150); }
   const C = h => new THREE.Color(h);
   const skyU = {
     top:{value:new THREE.Color(0x5d8fc9)}, horizon:{value:new THREE.Color(0xc9dcec)}, below:{value:new THREE.Color(0x8aa0b0)},
@@ -267,6 +269,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     envK = 0.004 + 0.28*(1 - night)*(0.55 + 0.45*clamp01(up / 0.4));
     dayK = 1 - night; try { syncFill(); } catch (e) {}
     if (envMats) envMats.forEach(m => m.envMapIntensity = envK * (m.userData.envBoost || 1));
+    requestProbe();
     renderer.shadowMap.needsUpdate = true;
   }
 
@@ -703,6 +706,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
       sw.userData.info.dims = r.label + ': ' + (on ? 'on' : 'off') + '. Click (or point and press in VR) to switch';
     });
     renderer.shadowMap.needsUpdate = true;
+    requestProbe();
     onLightsChanged();
   }
   // a wall light switch; facing is the direction the switch looks into the room
@@ -1485,6 +1489,15 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     done(); roofG.add(mg);
     // soft warm fill for the kitchen and lounge, kept short so it stays in the room
     { const l = regLight('spots', new THREE.PointLight(0xffd2a0, 0, 4.0, 1.5), 0.5); l.position.set(9.0, 2.6, 2.25); tall.add(l); }
+    // bounce light: lit floors and worktops throw soft warm light back onto walls and ceilings
+    // (these cast shadows too, so the bounce stays inside its own room)
+    [['bedroom', 1.75, 0.3, 2.0, 0.38, 4.0, true], ['spots', 7.6, 0.35, 2.4, 0.42, 6.0, true], ['spots', 5.3, 0.3, 3.6, 0.22, 3.0, true],
+     ['bathroom', 4.16, 0.3, 1.25, 0.4, 2.6, true], ['deckSpots', 4.7, DECK + 0.2, 2.6, 0.32, 2.8, true],
+     ['island', 9.4, 0.95, 2.2, 0.28, 2.4, false], ['cabinet', 9.5, 0.95, 0.5, 0.22, 1.3, false]].forEach(([c, x, y, z, i, d, sh]) => {
+      const b = regLight(c, new THREE.PointLight(0xffc996, 0, d, 2), i); b.position.set(x, y, z);
+      if (sh){ b.castShadow = true; b.shadow.mapSize.set(256, 256); b.shadow.bias = -0.002; b.shadow.camera.near = 0.05; }
+      model.add(b);
+    });
     // switches: three by the arched entrance door
     lightSwitch('spots', 11.425, 1.2, 4.07, '-x');
     lightSwitch('island', 11.425, 1.2, 4.18, '-x');
@@ -1502,7 +1515,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   let roofOn = false, textOff = false;
   function syncFill(){ amb.intensity = roofG.visible ? 0.03*dayK : 0; fill.intensity = roofG.visible ? 0.12*dayK : 0; }
   function syncVis(){
-    renderer.shadowMap.needsUpdate = true;
+    renderer.shadowMap.needsUpdate = true; requestProbe();
     roofG.visible = (mode === 'walk' || roofOn) && wallH === FULL_H;
     syncFill();
     labels.forEach(l => l.visible = mode === 'orbit' && !anim && !roofG.visible && !textOff);
@@ -2251,8 +2264,32 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     scene.traverse(o => { if (o.isMesh || o.isInstancedMesh) [].concat(o.material).forEach(m => { if (m && m.isMeshStandardMaterial) envMats.add(m); }); });
     envMats.forEach(m => m.envMapIntensity = envK * (m.userData.envBoost || 1));
   }
+  const outdoorEnv = scene.environment, outdoorMats = new Set();
+  envG.traverse(o => { if (o.isMesh || o.isInstancedMesh) [].concat(o.material).forEach(m => { if (m && m.isMeshStandardMaterial) outdoorMats.add(m); }); });
+  [mats.stone, mats.stoneDS, mats.trim].forEach(m => outdoorMats.add(m));
+  outdoorMats.forEach(m => { m.envMap = outdoorEnv; m.needsUpdate = true; });
+  const indoorMats = [...envMats].filter(m => !outdoorMats.has(m));
+  envMats = outdoorMats;                                   // the time of day only scales the outdoor environment
+  const PROBE_K = 0.9;
+  const probeRT = new THREE.WebGLCubeRenderTarget(128, {type:THREE.HalfFloatType});
+  const probeCam = new THREE.CubeCamera(0.1, 400, probeRT);
+  probeCam.position.set(7.8 + OFF[0], 1.4, 2.3 + OFF[1]); scene.add(probeCam);
+  const probePM = new THREE.PMREMGenerator(renderer);
+  let probeTex = null;
+  function captureProbe(){
+    probeDirty = false;
+    const hide = [marker, hl, ...labels].filter(o => o.visible); hide.forEach(o => o.visible = false);
+    scene.environment = null;                              // one bounce: capture without the previous capture
+    camera.getWorldPosition(skyDome.position);
+    probeCam.update(renderer, scene);
+    const old = probeTex; probeTex = probePM.fromCubemap(probeRT.texture).texture; if (old) old.dispose();
+    scene.environment = probeTex;
+    indoorMats.forEach(m => m.envMapIntensity = PROBE_K * (m.userData.envBoost || 1));
+    hide.forEach(o => o.visible = true);
+  }
 
   renderer.setAnimationLoop(function loop(){
+    if (probeDirty) captureProbe();
     camera.getWorldPosition(skyDome.position);
     if (renderer.xr.isPresenting){
       try { vrUpdate(); } catch (e){ showVRError(e); }
