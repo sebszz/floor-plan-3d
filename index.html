@@ -124,6 +124,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     </div>
   </div>
   <div class="controls">
+    <button id="btnLights" aria-pressed="false">Lights: off</button>
     <button id="btnRoof" aria-pressed="false">Show roof</button>
     <button id="btnText" aria-pressed="false">Hide text</button>
     <button id="btnCut" aria-pressed="false">Cut walls down</button>
@@ -138,6 +139,8 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
 
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/environments/RoomEnvironment.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/lights/RectAreaLightUniformsLib.js"></script>
 <script>
 (function(){
   // ---- Plan data (metres). x runs left to right, z runs back (0) to front ----
@@ -168,12 +171,20 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   let wallH = FULL_H;
 
   // ---- Three.js setup ----
+  // physically based colour pipeline: colours are converted to linear for lighting, output is sRGB with filmic tone mapping
+  THREE.ColorManagement.legacyMode = false;
+  { const CT = THREE.CanvasTexture; THREE.CanvasTexture = class extends CT { constructor(...a){ super(...a); this.encoding = THREE.sRGBEncoding; } }; }
   const host = document.getElementById('scene');
   const renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 0.95;
+  renderer.physicallyCorrectLights = false;
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = true;
   host.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
@@ -195,7 +206,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
 
   // ---- Time of day: sun path, colour and sky ----
   // Assumes the front (glass doors) faces south: sun rises on the right-hand side (east), sets on the left (west).
-  let tod = 13;
+  let tod = 13, envK = 0.5, envMats = null, dayK = 1;
   const C = h => new THREE.Color(h);
   const skyU = {
     top:{value:new THREE.Color(0x5d8fc9)}, horizon:{value:new THREE.Color(0xc9dcec)}, below:{value:new THREE.Color(0x8aa0b0)},
@@ -218,7 +229,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
         float m = dot(d, normalize(moonDir));
         col = mix(col, vec3(0.86, 0.9, 1.0), smoothstep(0.99975, 0.99988, m) * moonVis);
         col += vec3(0.5, 0.6, 0.9) * pow(max(m, 0.0), 300.0) * 0.25 * moonVis;
-        gl_FragColor = vec4(col, 1.0);
+        gl_FragColor = vec4(pow(max(col, 0.0), vec3(1.0/2.2)), 1.0);
       }`
   }));
   skyDome.renderOrder = -10; skyDome.frustumCulled = false;
@@ -252,7 +263,10 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     const night = clamp01(-up / 0.15);
     hemi.color.copy(C(0xdfefff).lerp(C(0xffc49a), warm*0.8).lerp(C(0x2a3a60), night));
     hemi.groundColor.copy(C(0x8a8f94).lerp(C(0x1a1d24), night));
-    hemi.intensity = 0.75 - 0.35*warm*(1-night) - 0.55*night;
+    hemi.intensity = (0.75 - 0.35*warm*(1-night) - 0.55*night) * 0.38;
+    envK = 0.004 + 0.28*(1 - night)*(0.55 + 0.45*clamp01(up / 0.4));
+    dayK = 1 - night; try { syncFill(); } catch (e) {}
+    if (envMats) envMats.forEach(m => m.envMapIntensity = envK * (m.userData.envBoost || 1));
     renderer.shadowMap.needsUpdate = true;
   }
 
@@ -358,6 +372,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   const stoneTex = makeStone();
   mats.stone = new THREE.MeshStandardMaterial({map:stoneTex, roughness:0.97});
   mats.stoneDS = new THREE.MeshStandardMaterial({map:stoneTex, roughness:0.95, side:THREE.DoubleSide});
+  mats.stone.color.set(0xb3aa9e); mats.stoneDS.color.set(0xb3aa9e);   // keeps the stone from washing out under filmic tone mapping
 
   // White eave trim with a grey pattern, like the border in the photo
   function makeTrim(){
@@ -387,8 +402,64 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
 
   // Walkable floors
   const floorsG = new THREE.Group(); model.add(floorsG);
+  // ---- procedural textures ----
+  function texCanvas(w, h, draw, rep){
+    const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h);
+    const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    if (rep) t.repeat.set(rep[0], rep[1]);
+    t.anisotropy = renderer.capabilities.getMaxAnisotropy(); return t;
+  }
+  let tseed = 3; const trnd = () => (tseed = (tseed*16807) % 2147483647) / 2147483647;
+  const floorTex = texCanvas(1024, 1024, (g, W, H) => {          // 2 m x 2 m of light oak boards, 0.2 m wide
+    const bw = W/10;
+    for (let i = 0; i < 10; i++){
+      let y = -trnd()*H;
+      while (y < H){
+        const len = H*(0.45 + trnd()*0.6), tone = 168 + trnd()*30;
+        g.fillStyle = `rgb(${tone+18|0},${tone-14|0},${tone-58|0})`; g.fillRect(i*bw, y, bw, len);
+        for (let k = 0; k < 26; k++){
+          g.strokeStyle = `rgba(${90+trnd()*30|0},${60+trnd()*20|0},${30},${0.08+trnd()*0.12})`; g.lineWidth = 1 + trnd()*1.5;
+          const x0 = i*bw + trnd()*bw; g.beginPath(); g.moveTo(x0, y);
+          for (let yy = y; yy < y + len; yy += 20) g.lineTo(x0 + Math.sin(yy*0.02 + k)*3, yy);
+          g.stroke();
+        }
+        g.fillStyle = 'rgba(60,40,25,0.55)'; g.fillRect(i*bw, y, bw, 2);
+        [y, y + H, y - H].forEach(yy => {}); y += len;
+      }
+      g.fillStyle = 'rgba(60,40,25,0.5)'; g.fillRect(i*bw, 0, 2, H);
+    }
+  }, [0.5, 0.5]);
+  floorTex.rotation = Math.PI/2;
+  mats.floorA.map = floorTex; mats.floorA.color.set(0xa8916f); mats.floorA.roughness = 0.6;
+  mats.floorB.map = floorTex; mats.floorB.color.set(0xa8916f); mats.floorB.roughness = 0.6;
+  const weave = texCanvas(256, 256, (g, W, H) => {             // fabric: fine woven noise, multiplies the colour
+    g.fillStyle = '#ffffff'; g.fillRect(0, 0, W, H);
+    for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2){ const v = 205 + trnd()*50 | 0; g.fillStyle = `rgb(${v},${v},${v})`; g.fillRect(x, y, 2, 2); }
+    g.strokeStyle = 'rgba(0,0,0,0.05)'; for (let y = 0; y < H; y += 4){ g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+  }, [4, 4]);
+  const grain = texCanvas(512, 512, (g, W, H) => {             // furniture wood grain, multiplies the colour
+    g.fillStyle = '#ffffff'; g.fillRect(0, 0, W, H);
+    for (let k = 0; k < 90; k++){
+      g.strokeStyle = `rgba(70,45,25,${0.05 + trnd()*0.12})`; g.lineWidth = 1 + trnd()*2;
+      const y0 = trnd()*H; g.beginPath(); g.moveTo(0, y0);
+      for (let x = 0; x <= W; x += 16) g.lineTo(x, y0 + Math.sin(x*0.012 + k)*6 + Math.sin(x*0.05 + k*3)*1.5);
+      g.stroke();
+    }
+  }, [1, 1]);
+  const slate = texCanvas(512, 512, (g, W, H) => {             // dark stone worktop with faint veins
+    g.fillStyle = '#ffffff'; g.fillRect(0, 0, W, H);
+    for (let i = 0; i < 4000; i++){ const v = 200 + trnd()*55 | 0; g.fillStyle = `rgba(${v},${v},${v},0.5)`; g.fillRect(trnd()*W, trnd()*H, 2, 2); }
+    for (let k = 0; k < 7; k++){
+      g.strokeStyle = 'rgba(255,255,255,0.35)'; g.lineWidth = 0.8 + trnd(); g.beginPath();
+      let x = trnd()*W, y = 0; g.moveTo(x, y);
+      while (y < H){ x += (trnd() - 0.5)*30; y += 12 + trnd()*20; g.lineTo(x, y); }
+      g.stroke();
+    }
+  }, [1, 1]);
+
   function floorSlab(x0, x1, y0, y1, z0, z1, mat){
     const m = new THREE.Mesh(new THREE.BoxGeometry(x1-x0, y1-y0, z1-z0), mat);
+    scaleUV(m.geometry, x1-x0, y1-y0, z1-z0, x0, 0);
     m.position.set((x0+x1)/2, (y0+y1)/2, (z0+z1)/2);
     m.receiveShadow = true; m.userData.floor = true;
     floorsG.add(m);
@@ -411,7 +482,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     g.font = '700 52px Archivo, system-ui, sans-serif'; g.fillText(title, 256, 66);
     g.fillStyle = '#2f5d8a';
     g.font = '500 40px Archivo, system-ui, sans-serif'; g.fillText(sub, 256, 120);
-    const s = new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c), depthTest:false, transparent:true}));
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c), depthTest:false, transparent:true, toneMapped:false}));
     s.scale.set(2.2, 0.65, 1); s.renderOrder = 10;
     return s;
   }
@@ -431,6 +502,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   }
   function addBox(w, u0, u1, y0, y1, mat, thick, off){
     y1 = Math.min(y1, wallH);
+    if (mat === mats.wall && y0 === 0) y0 = -0.06;      // sink walls into the floor so light can't leak underneath
     if (y1 - y0 <= 0.001 || u1 - u0 <= 0.001) return;
     const th = thick || w.t || T;
     const geo = new THREE.BoxGeometry(u1-u0, y1-y0, th);
@@ -604,7 +676,48 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     fabric: new THREE.MeshStandardMaterial({color:0x6b7f8c, roughness:0.95}),
     duvet: new THREE.MeshStandardMaterial({color:0xc98b6b, roughness:0.95})
   };
+  [fm.sofa, fm.cushion, fm.fabric, fm.duvet, fm.rug].forEach(m => { m.map = weave; m.roughness = 1; });
+  fm.rug.color.set(0xe3d8c4);
+  [fm.wood, fm.oak].forEach(m => { m.map = grain; m.roughness = 0.6; });
+  fm.top.map = slate; fm.top.roughness = 0.4; fm.top.userData.envBoost = 0.5;
+  fm.steel.roughness = 0.25; fm.steel.metalness = 0.8; fm.steel.userData.envBoost = 2.2;
+  fm.white.roughness = 0.3;
   const furn = new THREE.Group(); model.add(furn);
+  // ---- room lights: every lamp belongs to a room and is switched per room (all off by default) ----
+  // each circuit is one group of lights with its own switch(es); all off by default
+  const ROOMS = {};
+  [['spots','Kitchen and lounge ceiling spots'], ['island','Kitchen island pendants'], ['cabinet','Under-cabinet lights'],
+   ['deckSpots','Mezzanine spotlights'], ['bedroom','Bedroom ceiling spots'], ['bedLampA','Bedside lamp (left)'],
+   ['bedLampB','Bedside lamp (right)'], ['mezzLampA','Mezzanine bedside lamp (back)'], ['mezzLampB','Mezzanine bedside lamp (front)'],
+   ['bathroom','Bathroom lights']].forEach(([k, label]) => ROOMS[k] = {label, on:false, lights:[], emis:[], switches:[]});
+  function regLight(room, l, onI){ l.userData.onI = onI; l.intensity = 0; ROOMS[room].lights.push(l); return l; }
+  function regEmis(room, m, onE){ m.userData.onE = onE; m.emissiveIntensity = 0; ROOMS[room].emis.push(m); return m; }
+  const warmGlow = (room, color) => regEmis(room, new THREE.MeshStandardMaterial({color:0xfff7ec, emissive:color || 0xffd9a0, roughness:0.4}), 1.3);
+  let onLightsChanged = () => {};
+  function setRoom(room, on){
+    const r = ROOMS[room]; r.on = on;
+    r.lights.forEach(l => l.intensity = on ? l.userData.onI : 0);
+    r.emis.forEach(m => m.emissiveIntensity = on ? m.userData.onE : 0);
+    r.switches.forEach(sw => {
+      if (sw.userData.rocker) sw.userData.rocker.rotation.x = on ? -0.18 : 0.18;
+      sw.userData.info.dims = r.label + ': ' + (on ? 'on' : 'off') + '. Click (or point and press in VR) to switch';
+    });
+    renderer.shadowMap.needsUpdate = true;
+    onLightsChanged();
+  }
+  // a wall light switch; facing is the direction the switch looks into the room
+  function lightSwitch(room, x, y, z, facing){
+    item('Light switch', ''); const g = curItem; g.userData.switchRoom = room; g.userData.info.name = 'Light switch: ' + ROOMS[room].label;
+    const holder = new THREE.Group(); holder.position.set(x, y, z);
+    holder.rotation.y = {'+z':0, '-z':Math.PI, '+x':Math.PI/2, '-x':-Math.PI/2}[facing];
+    const plate = new THREE.Mesh(new THREE.BoxGeometry(0.086, 0.086, 0.01), new THREE.MeshStandardMaterial({color:0xf4f3ef, roughness:0.35}));
+    plate.position.z = 0.005; holder.add(plate);
+    const rocker = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.05, 0.012), new THREE.MeshStandardMaterial({color:0xfafaf8, roughness:0.3}));
+    rocker.position.z = 0.012; rocker.rotation.x = 0.18; holder.add(rocker);
+    g.add(holder); g.userData.rocker = rocker; ROOMS[room].switches.push(g);
+    g.userData.info.dims = ROOMS[room].label + ': off. Click (or point and press in VR) to switch';
+    done(); return g;
+  }
   const tall = new THREE.Group(); model.add(tall);   // hidden when walls are cut down
   let curItem = null;
   function item(name, dims){
@@ -687,7 +800,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
 
   // Kitchen (back right of Room B)
   item('Fridge freezer', '0.65 × 0.65 m, 2.0 m high');
-  bx(6.9,7.53, 0,2.0, 0.075,0.725, fm.steel);
+  bx(6.9,7.53, 0,2.0, 0.075,0.725, new THREE.MeshStandardMaterial({color:0x34373b, roughness:0.4, metalness:0.4}));
   bx(6.9,7.53, 0.86,0.875, 0.725,0.73, fm.black);         // fridge / freezer split
   bx(7.43,7.46, 1.05,1.75, 0.765,0.785, fm.black);        // fridge handle
   bx(7.43,7.46, 0.35,0.78, 0.765,0.785, fm.black);        // freezer handle
@@ -809,6 +922,12 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     const leafMat = new THREE.MeshStandardMaterial({color:0x3f6b35, roughness:0.85, flatShading:true});
     const olivLeaf = new THREE.MeshStandardMaterial({color:0x7a8a5a, roughness:0.85, flatShading:true});
     const terracotta = new THREE.MeshStandardMaterial({color:0xb5654a, roughness:0.9});
+    const lShape = new THREE.Shape(); lShape.moveTo(0, 0); lShape.quadraticCurveTo(0.35, 0.5, 0, 1); lShape.quadraticCurveTo(-0.35, 0.5, 0, 0);
+    const lGeo = new THREE.ShapeGeometry(lShape, 6);
+    const leafAt = (x, y, z, len, mat) => {   // one small leaf, randomly oriented
+      const m = new THREE.Mesh(lGeo, mat); m.position.set(x, y, z); m.scale.set(len*0.6, len, 1);
+      m.rotation.set((Math.random()-0.5)*2.4, Math.random()*6.28, (Math.random()-0.5)*2.4); m.castShadow = true; curItem.add(m);
+    };
     const leafBlob = (x, y, z, r, mat) => { const m = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 0), mat); m.position.set(x, y, z); m.rotation.set(x*7, y*5, z*3); m.castShadow = true; curItem.add(m); };
     item('Console table', '0.9 × 0.42 m, 0.86 m high');
     bx(11.0,11.425, 0.82,0.86, 0.8,1.7, fm.oak);
@@ -831,8 +950,12 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     cyl(11.3, 1.2, 0.045, 1.73, 1.86, fm.white);
     [[0.95],[1.12],[1.29]].forEach(([z]) => cyl(11.3, z, 0.045, 1.36, 1.5, fm.white));
     cyl(11.3, 1.5, 0.07, 1.73, 1.86, terracotta);               // trailing plant
-    for (let i = 0; i < 12; i++) leafBlob(11.22 + (i%2)*0.04, 1.88 - i*0.055, 1.45 + Math.sin(i)*0.07, 0.04, leafMat);
-    leafBlob(11.3, 1.9, 1.5, 0.075, leafMat);
+    leafMat.side = THREE.DoubleSide; leafMat.flatShading = false;
+    for (let i = 0; i < 40; i++){                         // trailing strands
+      const strand = i % 3, t = Math.floor(i/3)/13;
+      leafAt(11.22 + strand*0.03, 1.86 - t*0.62, 1.42 + strand*0.06 + Math.sin(t*9 + strand)*0.03, 0.05, leafMat);
+    }
+    for (let i = 0; i < 14; i++) leafAt(11.3 + (Math.random()-0.5)*0.12, 1.88 + Math.random()*0.07, 1.5 + (Math.random()-0.5)*0.12, 0.06, leafMat);
     done();
 
     // entrance corner by the glass door: coat hooks, shoe bench and an olive tree
@@ -896,8 +1019,16 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     cyl(9.72, 4.17, 0.17, 0, 0.36, new THREE.MeshStandardMaterial({color:0xe6dccb, roughness:1}));
     cyl(9.72, 4.17, 0.15, 0.36, 0.37, new THREE.MeshStandardMaterial({color:0x3d2e22, roughness:1}));
     cyl(9.72, 4.17, 0.022, 0.37, 1.1, fm.wood);
+    olivLeaf.side = THREE.DoubleSide; olivLeaf.flatShading = false; olivLeaf.color.set(0x7d8c5c);
+    const olivLeaf2 = olivLeaf.clone(); olivLeaf2.color.set(0x9aa57e);
     [[9.72,1.35,4.17,0.2],[9.6,1.2,4.12,0.16],[9.84,1.25,4.2,0.16],[9.7,1.55,4.15,0.17],[9.8,1.45,4.1,0.14],[9.62,1.45,4.22,0.14]]
-      .forEach(([x,y,z,r]) => leafBlob(x, y, z, r, olivLeaf));
+      .forEach(([x,y,z,r]) => {
+        for (let i = 0; i < 45; i++){
+          const v = new THREE.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5).normalize().multiplyScalar(r*(0.5 + Math.random()*0.5));
+          leafAt(x + v.x, y + v.y*0.8, z + v.z, 0.07, i % 3 ? olivLeaf : olivLeaf2);
+        }
+        addM(new THREE.CylinderGeometry(0.006, 0.01, r*1.4, 5), fm.wood, x, y - r*0.3, z);
+      });
     done();
   }
 
@@ -913,21 +1044,84 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   // Lounge (middle, facing the TV between the glass doors)
   floorSlab(5.75,8.15, 0,0.01, 3.15,4.2, fm.rug);
   item('Sofa', '1.8 × 0.9 m, 0.85 m high');
-  bx(6.05,7.85, 0,0.42, 2.05,2.95, fm.sofa);
-  bx(6.05,7.85, 0.42,0.85, 2.05,2.29, fm.sofa);
-  bx(6.05,6.25, 0.42,0.62, 2.05,2.95, fm.sofa);
-  bx(7.65,7.85, 0.42,0.62, 2.05,2.95, fm.sofa);
-  bx(6.27,6.93, 0.42,0.5, 2.29,2.91, fm.cushion);
-  bx(6.97,7.63, 0.42,0.5, 2.29,2.91, fm.cushion);
+  {
+    const sf = fm.sofa, cu = fm.cushion, cx = 6.95;
+    addM(roundBox(1.8, 0.26, 0.9, 0.05), sf, cx, 0.21, 2.5);                       // base
+    addM(roundBox(1.8, 0.46, 0.22, 0.07), sf, cx, 0.6, 2.16);                       // back
+    addM(roundBox(0.19, 0.34, 0.9, 0.07), sf, 6.145, 0.46, 2.5);                    // arms
+    addM(roundBox(0.19, 0.34, 0.9, 0.07), sf, 7.755, 0.46, 2.5);
+    addM(roundBox(0.7, 0.14, 0.64, 0.06), cu, 6.6, 0.41, 2.6);                      // seat cushions
+    addM(roundBox(0.7, 0.14, 0.64, 0.06), cu, 7.3, 0.41, 2.6);
+    addM(roundBox(0.68, 0.36, 0.15, 0.07), cu, 6.6, 0.66, 2.33, -0.18);             // back cushions
+    addM(roundBox(0.68, 0.36, 0.15, 0.07), cu, 7.3, 0.66, 2.33, -0.18);
+    [[6.15,2.12],[7.75,2.12],[6.15,2.88],[7.75,2.88]].forEach(([x,z]) => addM(new THREE.CylinderGeometry(0.02, 0.015, 0.08, 10), fm.wood, x, 0.04, z));
+    // throw pillows
+    const pil = (col, x, z, ry, rz) => { const m = new THREE.MeshStandardMaterial({color:col, roughness:1, map:weave}); addM(roundBox(0.42, 0.4, 0.13, 0.06), m, x, 0.68, z, -0.32, ry, rz); };
+    pil(0xc9a24a, 6.38, 2.47, 0.25, 0.08);       // mustard
+    pil(0xe8e1d4, 6.72, 2.5, 0.05, -0.05);       // cream
+    pil(0x6f7d63, 7.6, 2.48, -0.3, -0.1);        // sage
+  }
   done();
   item('Coffee table', '1.0 × 0.45 m, 0.42 m high');
   bx(6.45,7.45, 0.38,0.42, 3.25,3.7, fm.wood);
   [[6.5,3.3],[7.4,3.3],[6.5,3.65],[7.4,3.65]].forEach(([x,z]) => bx(x-0.025,x+0.025, 0.01,0.38, z-0.025,z+0.025, fm.wood));
   done();
+  item('Vase of flowers', 'Small ceramic vase with fresh flowers');
+  {
+    const vx = 7.12, vz = 3.46, vy = 0.42;
+    const vase = new THREE.LatheGeometry([[0,0],[0.045,0.002],[0.055,0.04],[0.05,0.09],[0.03,0.13],[0.026,0.15],[0.03,0.155],[0,0.155]].map(([r,y]) => new THREE.Vector2(r, y)), 32);
+    addM(vase, new THREE.MeshStandardMaterial({color:0x8fa8a0, roughness:0.25}), vx, vy, vz);
+    const stem = new THREE.MeshStandardMaterial({color:0x4d6b34, roughness:0.8});
+    const petals = [0xf2b8c6, 0xffffff, 0xf5d36b, 0xe98aa5, 0xffffff];
+    for (let i = 0; i < 7; i++){
+      const a = i*0.9, lean = 0.12 + (i%3)*0.08, h = 0.17 + (i%4)*0.035;
+      const tx = vx + Math.cos(a)*Math.sin(lean)*h, tz = vz + Math.sin(a)*Math.sin(lean)*h, ty = vy + 0.14 + Math.cos(lean)*h;
+      const st = addM(new THREE.CylinderGeometry(0.003, 0.003, h, 5), stem, (vx+tx)/2, (vy+0.14+ty)/2, (vz+tz)/2);
+      st.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(tx-vx, ty-vy-0.14, tz-vz).normalize());
+      addM(new THREE.IcosahedronGeometry(0.022, 1), new THREE.MeshStandardMaterial({color:petals[i%petals.length], roughness:0.7}), tx, ty, tz);
+      addM(new THREE.SphereGeometry(0.008, 8, 6), new THREE.MeshStandardMaterial({color:0xe0a020}), tx, ty + 0.018, tz);
+    }
+    // a couple of books under it
+    bx(6.6, 6.88, 0.42, 0.45, 3.32, 3.52, new THREE.MeshStandardMaterial({color:0x2f4f5f, roughness:0.8}));
+    bx(6.62, 6.86, 0.45, 0.47, 3.34, 3.5, new THREE.MeshStandardMaterial({color:0xd8cfbf, roughness:0.8}));
+  }
+  done();
   item('TV unit', '1.2 × 0.43 m, 0.45 m high, 40-inch TV');
   bx(6.35,7.55, 0,0.45, 4.0,4.425, fm.wood);
   bx(6.5,7.4, 0.7,1.22, 4.32,4.36, fm.black);
   bx(6.92,6.98, 0.45,0.7, 4.32,4.36, fm.black);
+  done();
+  item('TV remote', 'Remote control');
+  {
+    const r = addM(roundBox(0.045, 0.016, 0.17, 0.007), new THREE.MeshStandardMaterial({color:0x1b1d20, roughness:0.45}), 7.3, 0.459, 4.13, 0, 0.35);
+    for (let i = 0; i < 6; i++){
+      const b = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.004, 8), new THREE.MeshStandardMaterial({color: i ? 0x5a5f66 : 0xb3302b}));
+      b.position.set((i%2 ? 0.01 : -0.01), 0.009, -0.05 + Math.floor(i/2)*0.03); r.add(b);
+    }
+  }
+  done();
+  // tall leafy plant in the corner by the bedroom doorway
+  item('Fiddle-leaf fig', 'Potted plant, about 1.5 m');
+  {
+    const px = 3.86, pz = 4.13;
+    const pot = new THREE.LatheGeometry([[0,0],[0.15,0],[0.17,0.05],[0.19,0.36],[0.2,0.38],[0,0.38]].map(([r,y]) => new THREE.Vector2(r, y)), 32);
+    addM(pot, new THREE.MeshStandardMaterial({color:0x3b3f40, roughness:0.7}), px, 0, pz);
+    addM(new THREE.CylinderGeometry(0.18, 0.18, 0.01, 24), new THREE.MeshStandardMaterial({color:0x3a2a1e, roughness:1}), px, 0.37, pz);
+    addM(new THREE.CylinderGeometry(0.015, 0.025, 1.1, 8), fm.wood, px, 0.9, pz);
+    const leafShape = new THREE.Shape();
+    leafShape.moveTo(0, 0); leafShape.quadraticCurveTo(0.11, 0.06, 0.09, 0.2); leafShape.quadraticCurveTo(0.05, 0.3, 0, 0.32);
+    leafShape.quadraticCurveTo(-0.05, 0.3, -0.09, 0.2); leafShape.quadraticCurveTo(-0.11, 0.06, 0, 0);
+    const leafGeo = new THREE.ShapeGeometry(leafShape, 8);
+    const leafMats = [0x3d6b2f, 0x2f5a25, 0x4a7a36].map(c => new THREE.MeshStandardMaterial({color:c, roughness:0.55, side:THREE.DoubleSide}));
+    for (let i = 0; i < 26; i++){
+      const y = 0.6 + (i/26)*0.9, a = i*2.4, out = 0.06 + Math.random()*0.05;
+      const lf = new THREE.Mesh(leafGeo, leafMats[i%3]);
+      lf.position.set(px + Math.cos(a)*out, y, pz + Math.sin(a)*out);
+      lf.rotation.set(-0.6 - Math.random()*0.5, -a + Math.PI/2, (Math.random()-0.5)*0.4, 'YXZ');
+      lf.scale.setScalar(0.8 + (1 - i/26)*0.5); lf.castShadow = true;
+      curItem.add(lf);
+    }
+  }
   done();
 
   // Bedroom (Room A)
@@ -936,14 +1130,18 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   bx(0.6,2.1, 0,1.05, 0.075,0.14, fm.fabric);
   bx(0.68,2.02, 0.3,0.52, 0.14,2.05, fm.white);
   bx(0.66,2.04, 0.52,0.56, 0.8,2.07, fm.duvet);
-  bx(0.75,1.3, 0.52,0.64, 0.2,0.55, fm.white);
-  bx(1.4,1.95, 0.52,0.64, 0.2,0.55, fm.white);
+  addM(roundBox(0.56, 0.13, 0.36, 0.06), fm.white, 1.025, 0.6, 0.38, -0.18);      // soft pillows
+  addM(roundBox(0.56, 0.13, 0.36, 0.06), fm.white, 1.675, 0.6, 0.38, -0.18);
   done();
-  [[0.15,0.6],[2.1,2.55]].forEach(([x0,x1]) => {
+  [[0.15,0.6,'bedLampA'],[2.1,2.55,'bedLampB']].forEach(([x0,x1,lc]) => {
     item('Nightstand', '0.45 × 0.4 m, 0.55 m high');
     bx(x0,x1, 0,0.55, 0.075,0.475, fm.wood);
+    done();
+    item('Bedside lamp', ''); const lampItem = curItem; lampItem.userData.switchRoom = lc; ROOMS[lc].switches.push(lampItem);
+    lampItem.userData.info.dims = ROOMS[lc].label + ': off. Click (or point and press in VR) to switch';
     cyl((x0+x1)/2, 0.28, 0.06, 0.55,0.75, fm.steel);
-    cyl((x0+x1)/2, 0.28, 0.12, 0.75,0.95, fm.white);
+    cyl((x0+x1)/2, 0.28, 0.12, 0.75,0.95, warmGlow(lc));
+    { const l = regLight(lc, new THREE.PointLight(0xffcf96, 0, 1.1, 2), 0.9); l.position.set((x0+x1)/2, 0.85, 0.42); curItem.add(l); }
     done();
   });
   // olive green wall behind the bed with a gallery of framed prints
@@ -1144,15 +1342,19 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   bx(3.575,5.575, MZ.y,MZ.y+0.15, BZ0,BZ1, fm.wood);
   bx(3.6,5.55, MZ.y+0.15,MZ.y+0.33, BZ0+0.03,BZ1-0.03, fm.white);
   bx(4.3,5.57, MZ.y+0.33,MZ.y+0.37, BZ0+0.01,BZ1-0.01, fm.duvet);
-  bx(3.65,4.05, MZ.y+0.33,MZ.y+0.43, BZ0+0.1,BZ0+0.65, fm.white);
-  bx(3.65,4.05, MZ.y+0.33,MZ.y+0.43, BZ0+0.75,BZ0+1.3, fm.white);
+  addM(roundBox(0.38, 0.13, 0.56, 0.06), fm.white, 3.86, MZ.y+0.4, BZ0+0.375, 0, 0, 0.18);
+  addM(roundBox(0.38, 0.13, 0.56, 0.06), fm.white, 3.86, MZ.y+0.4, BZ0+1.025, 0, 0, 0.18);
   bx(3.575,3.63, MZ.y,MZ.y+0.75, BZ0-0.05,BZ1+0.05, fm.fabric);
   done();
-  [[BZ0-0.45,BZ0-0.07],[BZ1+0.07,BZ1+0.45]].forEach(([z0,z1]) => {
+  [[BZ0-0.45,BZ0-0.07,'mezzLampA'],[BZ1+0.07,BZ1+0.45,'mezzLampB']].forEach(([z0,z1,lc]) => {
     item('Nightstand', '0.38 × 0.35 m, 0.45 m high'); grab();
     bx(3.6,3.95, MZ.y,MZ.y+0.45, z0,z1, fm.wood);
+    done();
+    item('Bedside lamp', ''); grab(); const lampItem = curItem; lampItem.userData.switchRoom = lc; ROOMS[lc].switches.push(lampItem);
+    lampItem.userData.info.dims = ROOMS[lc].label + ': off. Click (or point and press in VR) to switch';
     cyl(3.78,(z0+z1)/2, 0.06, MZ.y+0.45,MZ.y+0.6, fm.steel);
-    cyl(3.78,(z0+z1)/2, 0.11, MZ.y+0.6,MZ.y+0.78, fm.white);
+    cyl(3.78,(z0+z1)/2, 0.11, MZ.y+0.6,MZ.y+0.78, warmGlow(lc));
+    { const l = regLight(lc, new THREE.PointLight(0xffcf96, 0, 0.75, 2), 0.8); l.position.set(3.85, MZ.y + 0.72, (z0+z1)/2); curItem.add(l); }
     done();
   });
   item('Ladder', 'Wooden ladder, 2.1 m up to the mezzanine'); grab();
@@ -1187,7 +1389,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   bx(WX0,WX1, WH-0.02,WH, WZ0,WZ1, fm.black);                       // top track
   done();
   // LED downlights in the bathroom ceiling (underside of the deck)
-  const ledMat = new THREE.MeshStandardMaterial({color:0xffffff, emissive:0xfff3dc, emissiveIntensity:1});
+  const ledMat = regEmis('bathroom', new THREE.MeshStandardMaterial({color:0xffffff, emissive:0xfff3dc, emissiveIntensity:1}), 1.4);
   item('LED ceiling lights', '3 recessed downlights'); grab();
   [0.55, 1.3, 2.05].forEach(z => {
     const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, 0.006, 24), fm.steel);
@@ -1196,10 +1398,12 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     led.position.set(4.16, DECK-0.107, z); curItem.add(led);
   });
   {
-    const sl = new THREE.SpotLight(0xfff1dc, 1.1, 3.2, 1.15, 0.6, 2);
-    sl.position.set(4.16, DECK-0.13, 1.3); sl.target.position.set(4.16, 0, 1.3);
-    sl.castShadow = true; sl.shadow.mapSize.set(512, 512); sl.shadow.bias = -0.002; sl.shadow.camera.near = 0.05;
-    curItem.add(sl, sl.target);
+    [0.6, 1.95].forEach(z => {
+      const sl = new THREE.SpotLight(0xfff4e6, 0, 3.4, 1.3, 1.0, 1.3);
+      sl.position.set(4.16, DECK-0.13, z); sl.target.position.set(4.16, 0, z);
+      sl.castShadow = true; sl.shadow.mapSize.set(512, 512); sl.shadow.bias = -0.0005; sl.shadow.normalBias = 0.02; sl.shadow.camera.near = 0.05;
+      curItem.add(sl, sl.target); regLight('bathroom', sl, 1.6);
+    });
   }
   done();
   mezz.forEach(g => tall.add(g));
@@ -1208,7 +1412,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   item('Pendant lights', '2 pendants, shade ø 0.3 m, 0.75 m above the island');
   {
     const shadeMat = new THREE.MeshStandardMaterial({color:0x22262b, roughness:0.5, side:THREE.DoubleSide});
-    const bulbMat = new THREE.MeshStandardMaterial({color:0xffffff, emissive:0xffd9a0, emissiveIntensity:1});
+    const bulbMat = regEmis('island', new THREE.MeshStandardMaterial({color:0xffffff, emissive:0xffd9a0, emissiveIntensity:1}), 1.5);
     [9.0, 9.8].forEach(x => {
       const z = 2.2, top = yA(z), sb = 1.65;
       const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, top - (sb + 0.2), 6), fm.black);
@@ -1219,19 +1423,88 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
       shade.position.set(x, sb + 0.1, z); curItem.add(shade);
       const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.045, 16, 12), bulbMat);
       bulb.position.set(x, sb + 0.05, z); curItem.add(bulb);
-      const pl = new THREE.PointLight(0xffd9a6, 0.55, 3.5, 2); pl.position.set(x, sb - 0.05, z); curItem.add(pl);
+      const pl = regLight('island', new THREE.SpotLight(0xffd6a0, 0, 3.0, 0.55, 0.45, 1.2), 2.6);
+      pl.position.set(x, sb + 0.02, z); pl.target.position.set(x, 0, z); curItem.add(pl, pl.target);
     });
     const g = curItem; done(); roofG.add(g);   // shown with the roof, like the ceiling it hangs from
+  }
+
+  // ---- ceiling and cabinet lights, like the reference photos ----
+  {
+    const warm = 0xffd6a0, rimMat = new THREE.MeshStandardMaterial({color:0xd8d8d4, roughness:0.4});
+    const discGeo = new THREE.CylinderGeometry(0.045, 0.045, 0.008, 24), rimGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.006, 24);
+    function downlight(parent, mat, x, y, z, normal){
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
+      const rim = new THREE.Mesh(rimGeo, rimMat); rim.position.set(x, y, z).addScaledVector(normal, -0.003); rim.quaternion.copy(q);
+      const led = new THREE.Mesh(discGeo, mat); led.position.set(x, y, z).addScaledVector(normal, -0.007); led.quaternion.copy(q);
+      parent.add(rim, led);
+    }
+    const spot = (room, x, y, z, tx, ty, tz, inten, angle, dist, noShadow) => {
+      const l = new THREE.SpotLight(warm, 0, dist, angle, 0.75, 1.2); l.position.set(x, y, z); l.target.position.set(tx, ty, tz);
+      if (!noShadow){ l.castShadow = true; l.shadow.mapSize.set(1024, 1024); l.shadow.bias = -0.0005; l.shadow.normalBias = 0.02; l.shadow.camera.near = 0.05; }
+      regLight(room, l, inten); return l;
+    };
+    // kitchen and lounge: two rows of downlights along the curved ceiling
+    item('Ceiling downlights', 'Warm LED downlights in the curved ceiling'); const vg = curItem;
+    const vaultLed = warmGlow('spots');
+    [6.6, 8.3, 10.0].forEach(x => [0.9, 3.6].forEach(z => {
+      const yv = yA(z), n = new THREE.Vector3(0, yv - YC, z - ZC).normalize();
+      downlight(curItem, vaultLed, x, yv, z, n);
+    }));
+    curItem.add(...[spot('spots', 7.2, 3.25, 2.25, 7.2, 0, 2.6, 1.5, 1.05, 9), spot('spots', 10.0, 3.25, 2.25, 10.0, 0, 2.2, 1.5, 1.05, 9)].flatMap(l => [l, l.target]));
+    done(); roofG.add(vg);
+    // under the mezzanine deck (lounge side)
+    item('Deck downlights', 'Warm LED downlights under the mezzanine'); const dg = curItem;
+    [[5.3, 3.0], [5.3, 4.0]].forEach(([x, z]) => downlight(curItem, vaultLed, x, DECK - 0.1, z, new THREE.Vector3(0, 1, 0)));
+    { const l = spot('spots', 5.3, DECK - 0.15, 3.5, 5.3, 0, 3.6, 1.1, 1.1, 5); curItem.add(l, l.target); }
+    done(); tall.add(dg);
+    // LED strip under the wall cabinets
+    item('Under-cabinet LED', 'Warm LED strip lighting the worktop'); const cg = curItem;
+    const strip = warmGlow('cabinet', 0xffcf90);
+    bx(7.6, 9.8, 1.438, 1.448, 0.33, 0.36, strip, curItem); bx(10.6, 11.4, 1.438, 1.448, 0.33, 0.36, strip, curItem);
+    if (THREE.RectAreaLightUniformsLib) THREE.RectAreaLightUniformsLib.init();
+    [[8.7, 2.2], [11.0, 0.8]].forEach(([x, w]) => {
+      const l = regLight('cabinet', new THREE.RectAreaLight(0xffcf90, 0, w, 0.06), 9);
+      l.position.set(x, 1.435, 0.35); l.rotation.x = -Math.PI/2 + 0.25; curItem.add(l);   // facing down, tilted a little towards the splashback
+    });
+    done(); tall.add(cg);
+    // bedroom: warm LED spots in the flat ceiling
+    item('Bedroom spotlights', 'Warm LED spotlights'); const bg = curItem;
+    const bedLed = warmGlow('bedroom');
+    [[1.0, 1.2], [2.5, 1.2], [1.0, 3.0], [2.5, 3.0]].forEach(([x, z]) => downlight(curItem, bedLed, x, FULL_H, z, new THREE.Vector3(0, 1, 0)));
+    [1.2, 3.0].forEach(z => { const l = spot('bedroom', 1.75, FULL_H - 0.05, z, 1.75, 0, z, 0.95, 1.4, 6); l.penumbra = 1.0; curItem.add(l, l.target); });
+    done(); roofG.add(bg);
+    // mezzanine: spot LEDs in the curved ceiling above the deck
+    item('Mezzanine spotlights', 'Warm LED spots above the deck'); const mg = curItem;
+    const mezzLed = warmGlow('deckSpots');
+    [[4.3, 1.4], [5.4, 1.4], [4.3, 3.5], [5.4, 3.5]].forEach(([x, z]) => {
+      const yv = yA(z), n = new THREE.Vector3(0, yv - YC, z - ZC).normalize();
+      downlight(curItem, mezzLed, x, yv, z, n);
+    });
+    { const l = spot('deckSpots', 4.8, yA(2.4) - 0.1, 2.4, 4.6, DECK, 2.6, 1.2, 1.15, 3.5); curItem.add(l, l.target); }
+    done(); roofG.add(mg);
+    // soft warm fill for the kitchen and lounge, kept short so it stays in the room
+    { const l = regLight('spots', new THREE.PointLight(0xffd2a0, 0, 4.0, 1.5), 0.5); l.position.set(9.0, 2.6, 2.25); tall.add(l); }
+    // switches: three by the arched entrance door
+    lightSwitch('spots', 11.425, 1.2, 4.07, '-x');
+    lightSwitch('island', 11.425, 1.2, 4.18, '-x');
+    lightSwitch('deckSpots', 11.425, 1.2, 4.29, '-x');
+    lightSwitch('cabinet', 7.75, 1.2, 0.075, '+z');                  // on the splashback under the wall cabinets
+    lightSwitch('bedroom', 2.4, 1.2, 4.025, '-z');                   // inside, next to the bedroom door
+    lightSwitch('bathroom', BX, 1.2, BZ + 0.05, '+z');               // on the corner beside the bathroom door
+    tall.add(lightSwitch('deckSpots', 3.575, DECK + 0.75, BZ0 - 0.26, '+x'));   // mezzanine, either side of the bed
+    tall.add(lightSwitch('deckSpots', 3.575, DECK + 0.75, BZ1 + 0.26, '+x'));
   }   // hidden with the tall items when walls are cut down
 
   roofG.traverse(o => { if (o.isMesh){ o.castShadow = !(o.material && o.material.transparent); o.receiveShadow = true; } });
   const amb = new THREE.AmbientLight(0xffffff, 0); scene.add(amb);
   const fill = new THREE.DirectionalLight(0xfff4e6, 0); fill.position.set(6, 5, -9); scene.add(fill);
   let roofOn = false, textOff = false;
+  function syncFill(){ amb.intensity = roofG.visible ? 0.03*dayK : 0; fill.intensity = roofG.visible ? 0.12*dayK : 0; }
   function syncVis(){
+    renderer.shadowMap.needsUpdate = true;
     roofG.visible = (mode === 'walk' || roofOn) && wallH === FULL_H;
-    amb.intensity = roofG.visible ? 0.12 : 0;
-    fill.intensity = roofG.visible ? 0.35 : 0;
+    syncFill();
     labels.forEach(l => l.visible = mode === 'orbit' && !anim && !roofG.visible && !textOff);
     hint.hidden = textOff;
     document.querySelector('.rooms').hidden = textOff;
@@ -1279,7 +1552,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
       else if (ny < 0.62) c = [0.30 + n*0.04, 0.31 + n*0.04, 0.20];                     // steep slope: rocky scrub
       else if (y < SEA + 4) c = [0.55, 0.52, 0.42];                                     // shoreline rock
       else c = [0.15 + n*0.04, 0.21 + n*0.05, 0.09];                                    // scrub and grass
-      cols.push(...c);
+      cols.push(...c.map(v => Math.pow(v, 2.2)));      // linear vertex colours
     }
     geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
     const terrain = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({vertexColors:true, roughness:1}));
@@ -1613,8 +1886,9 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   });
   el.addEventListener('pointerup', e => {
     if (!dragging && !anim){
-      const hit = firstHit(e.clientX, e.clientY);
-      if (mode === 'walk' && hit && hit.object.userData.floor) walkTo(hit.point, hit.object);
+      const hit = firstHit(e.clientX, e.clientY), sw = itemOf(hit);
+      if (sw && sw.userData.switchRoom){ setRoom(sw.userData.switchRoom, !ROOMS[sw.userData.switchRoom].on); show(sw, e.clientX, e.clientY); }
+      else if (mode === 'walk' && hit && hit.object.userData.floor) walkTo(hit.point, hit.object);
       else if (e.pointerType !== 'mouse') show(itemOf(hit), e.clientX, e.clientY);
     }
     down = null;
@@ -1644,7 +1918,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     wallH = on ? 1.0 : FULL_H;
     tall.visible = !on;
     btnCut.setAttribute('aria-pressed', String(on));
-    build(); syncVis();
+    build(); syncVis(); renderer.shadowMap.needsUpdate = true;
   });
   // time of day controls
   const todIn = document.getElementById('tod'), todVal = document.getElementById('todVal');
@@ -1681,6 +1955,16 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     btnText.textContent = textOff ? 'Show text' : 'Hide text';
     syncVis();
   });
+  const btnLights = document.getElementById('btnLights');
+  onLightsChanged = () => {
+    const anyOn = Object.values(ROOMS).some(r => r.on), allOn = Object.values(ROOMS).every(r => r.on);
+    btnLights.textContent = 'Lights: ' + (allOn ? 'on' : anyOn ? 'some on' : 'off');
+    btnLights.setAttribute('aria-pressed', String(anyOn));
+  };
+  btnLights.addEventListener('click', () => {
+    const turnOn = !Object.values(ROOMS).every(r => r.on);
+    Object.keys(ROOMS).forEach(k => setRoom(k, turnOn));
+  });
   const btnRoof = document.getElementById('btnRoof');
   btnRoof.addEventListener('click', () => {
     roofOn = !roofOn;
@@ -1715,14 +1999,14 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   const headPos = () => new THREE.Vector3().setFromMatrixPosition(xrCam().matrixWorld);
   const headQuat = () => new THREE.Quaternion().setFromRotationMatrix(xrCam().matrixWorld);
   let floorOff = 0;              // 1.6 m when the headset gives no floor level ('local' space)
-  let vrState = 'free', askSeat = null, lastSeatTime = 0, saved = null;
+  let vrState = 'free', askSeat = null, askLight = null, lastSeatTime = 0, saved = null;
 
   // floating panels inside VR: questions, "Get up" and error messages
   function makePanel(w, h){
     const c = document.createElement('canvas'); c.width = 1024; c.height = Math.round(1024*h/w);
     const tex = new THREE.CanvasTexture(c);
     const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
-      new THREE.MeshBasicMaterial({map:tex, transparent:true, depthTest:false, side:THREE.DoubleSide}));
+      new THREE.MeshBasicMaterial({map:tex, transparent:true, depthTest:false, side:THREE.DoubleSide, toneMapped:false}));
     m.renderOrder = 30; m.visible = false; m.frustumCulled = false;
     m.userData = {canvas:c, tex, hover:-1, buttons:[], title:''};
     scene.add(m); return m;
@@ -1777,11 +2061,16 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     'Mezzanine double bed': {kind:'lie', q:'Would you like to lie down in bed?', at:[3.95, 2.85], eye:DECK + 0.5, head:[-1, 0], label:'Lying in the mezzanine bed'}
   };
   function showAsk(name){
-    askSeat = name; vrState = 'ask'; askPanel.userData.hover = -1; askPanel.userData.upPlaced = false;
+    askSeat = name; askLight = null; vrState = 'ask'; askPanel.userData.hover = -1; askPanel.userData.upPlaced = false;
     drawPanel(askPanel, SEATS[name].q, ['Yes', 'No']);
     placeInFront(askPanel, 0.9, -0.15); askPanel.visible = true;
   }
-  function hideAsk(){ askPanel.visible = false; if (vrState === 'ask') vrState = 'free'; askSeat = null; }
+  function hideAsk(){ askPanel.visible = false; if (vrState === 'ask') vrState = 'free'; askSeat = null; askLight = null; }
+  function showLightAsk(room){
+    askSeat = null; askLight = room; vrState = 'ask'; askPanel.userData.hover = -1; askPanel.userData.upPlaced = true;
+    drawPanel(askPanel, ROOMS[room].label + ': ' + (ROOMS[room].on ? 'on' : 'off'), ['Turn on', 'Turn off']);
+    placeInFront(askPanel, 0.9, -0.15); askPanel.visible = true;
+  }
   // move the rig so the real head lands at `target` with rig orientation `q`
   function poseHead(target, q){
     rig.updateMatrixWorld(true);
@@ -1842,7 +2131,10 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
         if (ui){
           const k = btnIndex(ui.panel, ui.uv);
           if (k < 0) return;
-          if (ui.panel === askPanel){ const name = askSeat; hideAsk(); if (k === 0) settle(name); }
+          if (ui.panel === askPanel){
+            const name = askSeat, room = askLight; hideAsk();
+            if (room) setRoom(room, k === 0); else if (k === 0) settle(name);
+          }
           else if (ui.panel === upPanel) getUp();
           return;
         }
@@ -1869,7 +2161,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   const turnLatch = {};
   function vrUpdate(){
     const now = performance.now();
-    let tgt = null, pointedSeat = null;
+    let tgt = null, pointedSeat = null, pointedLight = null;
     const panels = [askPanel, upPanel].filter(p => p.visible);
     ctrls.forEach(c => {
       tmpM.identity().extractRotation(c.matrixWorld);
@@ -1885,6 +2177,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
       if (h.object.userData.floor){ c.userData.target = h.point.clone(); tgt = c.userData.target; }
       const it = itemOf(h);
       if (it && SEATS[it.userData.info.name]) pointedSeat = it.userData.info.name;
+      if (it && it.userData.switchRoom) pointedLight = it.userData.switchRoom;
     });
     panels.forEach(p => {
       let hv = -1;
@@ -1892,7 +2185,8 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
       if (hv !== p.userData.hover){ p.userData.hover = hv; drawPanel(p, p.userData.title, p.userData.buttons); }
     });
     if (vrState !== 'seated'){
-      if (pointedSeat){ lastSeatTime = now; if (vrState !== 'ask' || askSeat !== pointedSeat) showAsk(pointedSeat); }
+      if (pointedLight){ lastSeatTime = now; if (vrState !== 'ask' || askLight !== pointedLight) showLightAsk(pointedLight); }
+      else if (pointedSeat){ lastSeatTime = now; if (vrState !== 'ask' || askSeat !== pointedSeat) showAsk(pointedSeat); }
       else if (vrState === 'ask'){
         // give time to lie down in your real bed; once you look up, bring the question above your face
         const f = new THREE.Vector3(0, 0, -1).applyQuaternion(headQuat()), lookingUp = f.y > 0.55;
@@ -1927,12 +2221,12 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     const s = SPOTS.lounge;
     rig.position.set(s.x + OFF[0], floorOff, s.z + OFF[1]); rig.rotation.set(0, s.yaw, 0);
     vrState = 'free'; saved = null;
-    renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = true;   // static scene, lighter on the headset
+    renderer.shadowMap.needsUpdate = true;
     vrBtn.textContent = 'Exit VR';
     session.addEventListener('end', () => {
       askPanel.visible = upPanel.visible = errPanel.visible = false; vrState = 'free'; saved = null;
       rig.position.set(0, 0, 0); rig.rotation.set(0, 0, 0);
-      renderer.shadowMap.autoUpdate = true;
+      renderer.shadowMap.needsUpdate = true;
       camera.fov = ORBIT_FOV; camera.updateProjectionMatrix();
       camera.position.copy(OVERVIEW.pos); camera.quaternion.copy(quatLookAt(OVERVIEW.pos, OVERVIEW.target));
       mode = 'orbit'; controls.target.copy(OVERVIEW.target); controls.enabled = true;
@@ -1948,6 +2242,15 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     if (s) s.end();
     else enterVR().catch(err => { hint.hidden = false; hint.textContent = 'Could not start VR: ' + (err && err.message ? err.message : err); });
   });
+
+  // environment lighting for every physically based material
+  {
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new THREE.RoomEnvironment(), 0.04).texture;
+    envMats = new Set();
+    scene.traverse(o => { if (o.isMesh || o.isInstancedMesh) [].concat(o.material).forEach(m => { if (m && m.isMeshStandardMaterial) envMats.add(m); }); });
+    envMats.forEach(m => m.envMapIntensity = envK * (m.userData.envBoost || 1));
+  }
 
   renderer.setAnimationLoop(function loop(){
     camera.getWorldPosition(skyDome.position);
