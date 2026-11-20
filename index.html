@@ -84,6 +84,17 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
 .tip b{display:block;font-weight:700}
 .tip span{color:var(--muted)}
 .tip[hidden]{display:none}
+.tuner{position:fixed;right:12px;top:calc(env(safe-area-inset-top,0px) + 12px);width:min(320px,calc(100% - 24px));max-height:calc(100% - 24px);overflow:auto;
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);z-index:6}
+.tuner[hidden]{display:none}
+.tuner h2{font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:12px 0 6px}
+.tuner section + section{border-top:1px solid var(--line);margin-top:10px}
+.trow{display:grid;grid-template-columns:1fr 1.2fr 3.2em;align-items:center;gap:6px;font-size:.8rem;margin:4px 0}
+.trow select{grid-column:2 / 4;font-size:.8rem;padding:4px 6px}
+.trow input[type=range]{width:100%;accent-color:var(--accent)}
+.trow output{font-variant-numeric:tabular-nums;color:var(--muted);text-align:right}
+.tnote{font-size:.75rem;color:var(--muted);margin:6px 0}
+.tuner textarea{width:100%;box-sizing:border-box;font:12px/1.4 ui-monospace,Menlo,monospace;margin-top:6px;background:var(--btn);color:var(--text);border:1px solid var(--line);border-radius:6px}
 </style>
 </head>
 <body>
@@ -133,6 +144,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   </div>
   <div class="controls">
     <button id="btnLights" aria-pressed="false">Lights: off</button>
+    <button id="btnTuner">Light tuner</button>
     <button id="btnRoof" aria-pressed="false">Show roof</button>
     <button id="btnText" aria-pressed="false">Hide text</button>
     <button id="btnCut" aria-pressed="false">Cut walls down</button>
@@ -144,6 +156,27 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
 </div>
 <div class="hint" id="hint"></div>
 <div class="tip" id="tip" hidden></div>
+<div class="tuner" id="tuner" hidden>
+  <div class="phead"><h1>Light tuner</h1><button id="tClose" title="Close">✕</button></div>
+  <section>
+    <h2>Light</h2>
+    <div class="trow"><label for="tCirc">Light group</label><select id="tCirc"></select></div>
+    <div class="trow"><label for="tOn">Switched on</label><input type="checkbox" id="tOn"></div>
+    <div id="tLight"></div>
+  </section>
+  <section>
+    <h2>Surface</h2>
+    <button id="tPick">Pick a surface</button>
+    <p id="tPicked" class="tnote">Choose a finish (floor, wall, island top...) to change how it takes light.</p>
+    <p class="tnote">Finishes are shared: changing the island top also changes the other worktops.</p>
+    <div id="tMat"></div>
+  </section>
+  <section>
+    <div class="controls"><button id="tExport">Export for Claude</button><button id="tReset">Reset all</button></div>
+    <p id="tMsg" class="tnote">Changes save automatically in this browser.</p>
+    <textarea id="tJson" hidden rows="8" readonly></textarea>
+  </section>
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
@@ -698,7 +731,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   [fm.sofa, fm.cushion, fm.fabric, fm.duvet, fm.rug].forEach(m => { m.map = weave; m.roughness = 1; });
   fm.rug.color.set(0xe3d8c4);
   [fm.wood, fm.oak].forEach(m => { m.map = grain; m.roughness = 0.6; });
-  fm.top.map = slate; fm.top.roughness = 0.4; fm.top.userData.envBoost = 0.5;
+  fm.top.map = slate; fm.top.roughness = 0.28; fm.top.userData.envBoost = 0.6;
   fm.steel.roughness = 0.25; fm.steel.metalness = 0.8; fm.steel.userData.envBoost = 2.2;
   fm.white.roughness = 0.3;
   const furn = new THREE.Group(); model.add(furn);
@@ -716,8 +749,10 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     const budget = Math.max(1, Math.min(caps.maxTextures - 7, (caps.maxVaryings || 16) - 8, {low:2, medium:6, high:10}[quality]));
     const size = {low:256, medium:512, high:1024}[quality];
     let used = 0;
-    const all = Object.values(ROOMS).flatMap(r => r.lights.map(l => [l, r.on]));
-    all.sort((a, b) => (a[0].userData.bounce ? 1 : 0) - (b[0].userData.bounce ? 1 : 0));   // main lights first
+    const PRIORITY = {bedroom:0, bathroom:1, mezzLampA:2, mezzLampB:3, deckSpots:4, bedLampA:5, bedLampB:6, spots:7};
+    const all = Object.entries(ROOMS).flatMap(([k, r]) => r.lights.map(l => [l, r.on, k]));
+    const score = ([l, , k]) => (l.userData.bounce ? 100 : 0) + (PRIORITY[k] ?? 50);
+    all.sort((a, b) => score(a) - score(b));   // lights beside other rooms first, bounce lights last
     all.forEach(([l, on]) => {
       const bounceOk = !l.userData.bounce || quality === 'high';
       let cast = false;
@@ -726,10 +761,16 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
       if (l.userData.bounce) l.intensity = (on && bounceOk && (cast || !l.userData.wantsShadow)) ? l.userData.onI : 0;
       if (cast && !l.isPointLight && l.shadow.mapSize.x !== size){ l.shadow.mapSize.set(size, size); if (l.shadow.map){ l.shadow.map.dispose(); l.shadow.map = null; } }
       l.castShadow = cast;
+      if (l.userData.safeDist) l.distance = cast ? l.userData.tunedDist : Math.min(l.userData.tunedDist, l.userData.safeDist);
     });
     renderer.shadowMap.needsUpdate = true;
   }
-  function regLight(room, l, onI){ l.userData.onI = onI; l.intensity = 0; ROOMS[room].lights.push(l); return l; }
+  function regLight(room, l, onI){ l.userData.onI = onI; l.intensity = 0; l.userData.tunedDist = l.distance; ROOMS[room].lights.push(l); return l; }
+  // lamp lights: shadowed when possible; without a shadow they are kept short so they can't reach through a wall or the deck
+  function lampShadow(l, safeDist){
+    l.userData.wantsShadow = true; l.userData.safeDist = safeDist;
+    l.shadow.mapSize.set(512, 512); l.shadow.bias = -0.0005; l.shadow.normalBias = 0.008; l.shadow.camera.near = 0.02;
+  }
   // on Low only the first ordinary light of each circuit is kept: every light costs time on every pixel
   function applyLightLOD(){
     Object.values(ROOMS).forEach(r => {
@@ -1197,12 +1238,13 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     lampItem.userData.info.dims = ROOMS[lc].label + ': off. Click (or point and press in VR) to switch';
     cyl((x0+x1)/2, 0.28, 0.06, 0.55,0.75, fm.steel);
     cyl((x0+x1)/2, 0.28, 0.12, 0.75,0.95, warmGlow(lc));
-    { const l = regLight(lc, new THREE.PointLight(0xffcf96, 0, 1.1, 2), 0.9); l.position.set((x0+x1)/2, 0.85, 0.42); curItem.add(l); }
+    { const xc = (x0+x1)/2, l = regLight(lc, new THREE.SpotLight(0xffcf96, 0, 1.1, 1.35, 1.0, 2), 0.9);
+      l.position.set(xc, 0.73, 0.43); l.target.position.set(xc, 0, 0.8); lampShadow(l, 1.0); curItem.add(l, l.target); }
     done();
   });
   // olive green wall behind the bed with a gallery of framed prints
   {
-    const olive = new THREE.MeshStandardMaterial({color:0x5c6a43, roughness:0.95});
+    const olive = new THREE.MeshStandardMaterial({color:0x5c6a43, roughness:0.95}); olive.userData.tname = 'Olive feature wall (bedroom)';
     bx(0.075, 3.425, 0, FULL_H, 0.075, 0.079, olive, tall);
     function art(kind){
       const c = document.createElement('canvas'); c.width = 256; c.height = 320;
@@ -1383,6 +1425,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   bx(MZ.x0,MZ.x1, DECK-0.1,DECK-0.02, MZ.z0,MZ.z1, fm.white);
   {   // ceiling panels under the deck: the bathroom part and the lounge part glow with their own lights
     const bathCeil = ceilGlow('bathroom', 0.2), loungeCeil = ceilGlow('spots', 0.15);
+    bathCeil.userData.tname = 'Bathroom ceiling'; loungeCeil.userData.tname = 'Ceiling under the mezzanine (lounge)';
     bx(3.575, BX-0.05, DECK-0.104, DECK-0.1, 0.075, BZ-0.05, bathCeil);
     bx(BX+0.05, MZ.x1, DECK-0.104, DECK-0.1, 0.075, 4.425, loungeCeil);
     bx(3.575, BX+0.05, DECK-0.104, DECK-0.1, BZ+0.05, 4.425, loungeCeil);
@@ -1419,7 +1462,8 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     lampItem.userData.info.dims = ROOMS[lc].label + ': off. Click (or point and press in VR) to switch';
     cyl(3.78,(z0+z1)/2, 0.06, MZ.y+0.45,MZ.y+0.6, fm.steel);
     cyl(3.78,(z0+z1)/2, 0.11, MZ.y+0.6,MZ.y+0.78, warmGlow(lc));
-    { const l = regLight(lc, new THREE.PointLight(0xffcf96, 0, 0.75, 2), 0.8); l.position.set(3.85, MZ.y + 0.72, (z0+z1)/2); curItem.add(l); }
+    { const zc = (z0+z1)/2, l = regLight(lc, new THREE.SpotLight(0xffcf96, 0, 0.75, 1.35, 1.0, 2), 0.8);
+      l.position.set(3.93, MZ.y + 0.58, zc); l.target.position.set(4.4, MZ.y, zc); lampShadow(l, 0.7); curItem.add(l, l.target); }
     done();
   });
   item('Ladder', 'Wooden ladder, 2.1 m up to the mezzanine'); grab();
@@ -1506,7 +1550,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     }
     const spot = (room, x, y, z, tx, ty, tz, inten, angle, dist, noShadow) => {
       const l = new THREE.SpotLight(warm, 0, dist, angle, 0.75, 1.2); l.position.set(x, y, z); l.target.position.set(tx, ty, tz);
-      if (!noShadow){ l.userData.wantsShadow = true; l.shadow.mapSize.set(1024, 1024); l.shadow.bias = -0.0005; l.shadow.normalBias = 0.02; l.shadow.camera.near = 0.05; }
+      if (!noShadow){ l.userData.wantsShadow = true; l.shadow.mapSize.set(1024, 1024); l.shadow.bias = -0.0004; l.shadow.normalBias = 0.006; l.shadow.camera.near = 0.05; }
       regLight(room, l, inten); return l;
     };
     // kitchen and lounge: two rows of downlights along the curved ceiling
@@ -1530,14 +1574,14 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     if (THREE.RectAreaLightUniformsLib) THREE.RectAreaLightUniformsLib.init();
     [[8.7, 2.2], [11.0, 0.8]].forEach(([x, w]) => {
       const l = regLight('cabinet', new THREE.RectAreaLight(0xffcf90, 0, w, 0.06), 9);
-      l.position.set(x, 1.435, 0.35); l.rotation.x = -Math.PI/2 + 0.25; curItem.add(l);   // facing down, tilted a little towards the splashback
+      l.position.set(x, 1.435, 0.35); l.rotation.x = -Math.PI/2 - 0.22; curItem.add(l);   // facing down, angled slightly into the room so the island top picks up the strip's reflection
     });
     done(); tall.add(cg);
     // bedroom: warm LED spots in the flat ceiling
     item('Bedroom spotlights', 'Warm LED spotlights'); const bg = curItem;
     const bedLed = warmGlow('bedroom');
     [[1.0, 1.2], [2.5, 1.2], [1.0, 3.0], [2.5, 3.0]].forEach(([x, z]) => downlight(curItem, bedLed, x, FULL_H, z, new THREE.Vector3(0, 1, 0)));
-    [1.2, 3.0].forEach(z => { const l = spot('bedroom', 1.75, FULL_H - 0.05, z, 1.75, 0, z, 0.95, 1.4, 6); l.penumbra = 1.0; curItem.add(l, l.target); });
+    [1.2, 3.0].forEach(z => { const l = spot('bedroom', 1.75, FULL_H - 0.05, z, 1.75, 0, z, 0.95, 1.15, 6); l.penumbra = 1.0; curItem.add(l, l.target); });
     done(); roofG.add(bg);
     // mezzanine: spot LEDs in the curved ceiling above the deck
     item('Mezzanine spotlights', 'Warm LED spots above the deck'); const mg = curItem;
@@ -1961,6 +2005,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     hover(e.clientX, e.clientY);
   });
   el.addEventListener('pointerup', e => {
+    if (tunerPick && !dragging){ tunerPick(firstHit(e.clientX, e.clientY)); down = null; return; }
     if (!dragging && !anim){
       const hit = firstHit(e.clientX, e.clientY), sw = itemOf(hit);
       if (sw && sw.userData.switchRoom){ setRoom(sw.userData.switchRoom, !ROOMS[sw.userData.switchRoom].on); show(sw, e.clientX, e.clientY); }
@@ -2384,6 +2429,159 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     indoorMats.forEach(m => m.envMapIntensity = PROBE_K * (m.userData.envBoost || 1));
     hide.forEach(o => o.visible = true);
   }
+
+  // ---- Light tuner: adjust each light group and each surface finish, then export the settings ----
+  const TUNE_KEY = 'lightTuner.v2';
+  // Seb's tuned settings (made on High) - these are now the defaults
+  const DEFAULT_TUNE = {
+    lights: {
+      spots:     {k:2.3, reach:0.9},
+      cabinet:   {k:3, reach:2.1, warm:0.8, glow:1.45},
+      island:    {k:2.65, reach:1.7, spread:1.44, soft:0.75},
+      deckSpots: {warm:0.8, spread:1.24, reach:1.8},
+      mezzLampA: {reach:2.05, warm:1},
+      mezzLampB: {k:1.95, reach:3, warm:0.9, glow:1.25, spread:1.38},
+      bedroom:   {k:2.45, reach:2.25, spread:0.98, warm:0.65, soft:0.65},
+      bedLampA:  {k:3, reach:3, spread:1.46, warm:0.75},
+      bedLampB:  {k:3, reach:3, spread:1.6, soft:0.75, warm:0.75},
+      bathroom:  {k:1.55, warm:0.5, glow:3, reach:1.9}
+    },
+    mats: {
+      'Walls (plaster)':                      {bright:1.82, gloss:0, refl:1.7, metal:0},
+      'Ceiling under the mezzanine (lounge)': {bright:0.46, gloss:0, refl:0.3, metal:0},
+      'Sofa':                                 {bright:2},
+      'Dark wood furniture':                  {bright:2, refl:1},
+      'Worktops and island top':              {bright:2, gloss:0.72, refl:4, metal:0.1},
+      'Ceilings and roof (white)':            {bright:1.38, refl:1, gloss:0},
+      'Duvet':                                {bright:1.4, refl:1.3},
+      'Oak (wardrobes, shelves, bench)':      {bright:1.68},
+      'Olive feature wall (bedroom)':         {bright:1.52}
+    }
+  };
+  const cloneTune = t => JSON.parse(JSON.stringify(t));
+  let tune = cloneTune(DEFAULT_TUNE);
+  try { const t = JSON.parse(localStorage.getItem(TUNE_KEY) || 'null'); if (t && t.lights && t.mats) tune = t; } catch (e) {}
+  // remember the original values once, so every setting is applied from the defaults (never compounding)
+  Object.values(ROOMS).forEach(r => {
+    r.lights.forEach(l => { l.userData.base = {onI:l.userData.onI, distance:l.distance, angle:l.angle, penumbra:l.penumbra, color:l.color.clone()}; });
+    r.emis.forEach(m => { if (!m.userData.baseE) m.userData.baseE = m.userData.onE; });
+  });
+  const MAT_NAMES = new Map([[mats.floorA,'Bedroom floor (oak)'],[mats.floorB,'Main floor (oak)'],[mats.wall,'Walls (plaster)'],
+    [mats.wallEdge,'Wall ends / door jambs'],[mats.roof,'Ceilings and roof (white)'],[fm.top,'Worktops and island top'],[fm.cab,'Kitchen cabinets'],
+    [fm.steel,'Steel (handles, kettle, hood)'],[fm.white,'White items'],[fm.wood,'Dark wood furniture'],[fm.oak,'Oak (wardrobes, shelves, bench)'],
+    [fm.sofa,'Sofa'],[fm.cushion,'Sofa cushions'],[fm.rug,'Rug'],[fm.tile,'Bathroom floor tiles'],[fm.mirror,'Mirrors'],[fm.fabric,'Headboard fabric'],
+    [fm.duvet,'Duvet'],[mats.stone,'Stone walls (outside)'],[mats.glass,'Glass'],[fm.black,'Black items']]);
+  const matReg = new Map(), matByKey = {};
+  let mi = 0;
+  model.traverse(o => {
+    if (!o.isMesh) return;
+    [].concat(o.material).forEach(m => {
+      if (!m || !m.isMeshStandardMaterial || matReg.has(m)) return;
+      const idx = mi++;
+      let label = MAT_NAMES.get(m) || m.userData.tname;
+      const key = label || ('m' + idx);          // named finishes use their name as a stable key
+      if (!label){ let p = o; while (p && !(p.userData && p.userData.info)) p = p.parent; label = (p ? p.userData.info.name : 'Surface') + ' (' + key + ')'; }
+      m.userData.tbase = {color:m.color.clone(), roughness:m.roughness, metalness:m.metalness, envBoost:m.userData.envBoost || 1};
+      matReg.set(m, {key, label}); matByKey[key] = m;
+    });
+  });
+  const warmCol = t => new THREE.Color(0xfff4ea).lerp(new THREE.Color(0xffb062), t);
+  function applyLightTune(c){
+    const t = tune.lights[c] || {}, r = ROOMS[c];
+    r.lights.forEach(l => {
+      const b = l.userData.base;
+      l.userData.onI = b.onI * (t.k ?? 1);
+      if (b.distance) l.distance = b.distance * (t.reach ?? 1);
+      l.userData.tunedDist = l.distance;
+      if (l.isSpotLight){ l.angle = Math.min(1.55, b.angle * (t.spread ?? 1)); if (t.soft !== undefined) l.penumbra = t.soft; else l.penumbra = b.penumbra; }
+      l.color.copy(t.warm !== undefined ? warmCol(t.warm) : b.color);
+    });
+    r.emis.forEach(m => m.userData.onE = m.userData.baseE * (t.glow ?? 1));
+    setRoom(c, r.on);
+  }
+  function applyMatTune(key){
+    const m = matByKey[key], t = tune.mats[key] || {}, b = m.userData.tbase;
+    m.color.copy(b.color).multiplyScalar(t.bright ?? 1);
+    m.roughness = t.gloss !== undefined ? 1 - t.gloss : b.roughness;
+    m.metalness = t.metal ?? b.metalness;
+    m.userData.envBoost = b.envBoost * (t.refl ?? 1);
+  }
+  function refreshEnv(){ setTime(tod); renderer.shadowMap.needsUpdate = true; }
+  Object.keys(tune.lights).forEach(c => ROOMS[c] && applyLightTune(c));
+  Object.keys(tune.mats).forEach(k => matByKey[k] && applyMatTune(k));
+  refreshEnv();
+  let saveT = 0;
+  const saveTune = () => { clearTimeout(saveT); saveT = setTimeout(() => { try { localStorage.setItem(TUNE_KEY, JSON.stringify(tune)); } catch (e) {} }, 300); };
+
+  // panel
+  const tp = document.getElementById('tuner');
+  const tq = sel => tp.querySelector(sel);
+  const circSel = tq('#tCirc');
+  Object.keys(ROOMS).forEach(k => { const o = document.createElement('option'); o.value = k; o.textContent = ROOMS[k].label; circSel.appendChild(o); });
+  function sliderRow(host, label, min, max, step, get, set, fmt){
+    const row = document.createElement('div'); row.className = 'trow';
+    row.innerHTML = '<label></label><input type="range"><output></output>';
+    row.querySelector('label').textContent = label;
+    const inp = row.querySelector('input'), out = row.querySelector('output');
+    Object.assign(inp, {min, max, step});
+    const show = v => out.textContent = fmt ? fmt(v) : (+v).toFixed(2);
+    row.refresh = () => { inp.value = get(); show(inp.value); };
+    inp.addEventListener('input', () => { set(parseFloat(inp.value)); show(inp.value); });
+    host.appendChild(row); return row;
+  }
+  const lt = () => (tune.lights[circSel.value] = tune.lights[circSel.value] || {});
+  const lightRows = [
+    ['Strength', 0, 3, 0.05, () => lt().k ?? 1, v => lt().k = v, v => '×' + (+v).toFixed(2)],
+    ['Reach (how far)', 0.3, 3, 0.05, () => lt().reach ?? 1, v => lt().reach = v, v => '×' + (+v).toFixed(2)],
+    ['Spread (cone width)', 0.5, 1.6, 0.02, () => lt().spread ?? 1, v => lt().spread = v, v => '×' + (+v).toFixed(2)],
+    ['Soft edge', 0, 1, 0.05, () => lt().soft ?? (ROOMS[circSel.value].lights.find(l => l.isSpotLight)?.userData.base.penumbra ?? 0.75), v => lt().soft = v],
+    ['Warmth', 0, 1, 0.05, () => lt().warm ?? 0.5, v => lt().warm = v],
+    ['Fixture glow', 0, 3, 0.05, () => lt().glow ?? 1, v => lt().glow = v, v => '×' + (+v).toFixed(2)]
+  ].map(([lab, a, b, st, g, s, f]) => sliderRow(tq('#tLight'), lab, a, b, st, g, v => { s(v); applyLightTune(circSel.value); saveTune(); }, f));
+  const onBox = tq('#tOn');
+  function refreshLight(){ lightRows.forEach(r => r.refresh()); onBox.checked = ROOMS[circSel.value].on; }
+  circSel.addEventListener('change', refreshLight);
+  onBox.addEventListener('change', () => setRoom(circSel.value, onBox.checked));
+
+  let pickedKey = null;
+  const mt = () => (tune.mats[pickedKey] = tune.mats[pickedKey] || {});
+  const matRows = [
+    ['Brightness', 0.3, 2, 0.02, () => mt().bright ?? 1, v => mt().bright = v, v => '×' + (+v).toFixed(2)],
+    ['Glossiness', 0, 1, 0.02, () => mt().gloss ?? (1 - matByKey[pickedKey].userData.tbase.roughness), v => mt().gloss = v],
+    ['Reflection', 0, 4, 0.05, () => mt().refl ?? 1, v => mt().refl = v, v => '×' + (+v).toFixed(2)],
+    ['Metallic', 0, 1, 0.02, () => mt().metal ?? matByKey[pickedKey].userData.tbase.metalness, v => mt().metal = v]
+  ].map(([lab, a, b, st, g, s, f]) => sliderRow(tq('#tMat'), lab, a, b, st, g, v => { if (!pickedKey) return; s(v); applyMatTune(pickedKey); refreshEnv(); saveTune(); }, f));
+  tq('#tMat').hidden = true;
+  let tunerPick = null;
+  tq('#tPick').addEventListener('click', () => {
+    tq('#tPicked').textContent = 'Click a surface in the room...';
+    tunerPick = hit => {
+      tunerPick = null;
+      if (!hit){ tq('#tPicked').textContent = 'Nothing there - try again.'; return; }
+      let m = hit.object.material; if (Array.isArray(m)) m = m[hit.face && hit.face.materialIndex || 0];
+      const reg = matReg.get(m);
+      if (!reg){ tq('#tPicked').textContent = 'That surface cannot be tuned.'; return; }
+      pickedKey = reg.key; tq('#tPicked').textContent = reg.label;
+      tq('#tMat').hidden = false; matRows.forEach(r => r.refresh());
+    };
+  });
+  tq('#tExport').addEventListener('click', () => {
+    const out = {version:1, lights:tune.lights, mats:{}};
+    Object.keys(tune.mats).forEach(k => out.mats[k] = Object.assign({label:matReg.get(matByKey[k]).label}, tune.mats[k]));
+    const ta = tq('#tJson'); ta.hidden = false; ta.value = JSON.stringify(out, null, 1); ta.select();
+    try { navigator.clipboard.writeText(ta.value); tq('#tMsg').textContent = 'Copied - paste it to Claude.'; } catch (e) { tq('#tMsg').textContent = 'Select all and copy the text below.'; }
+  });
+  tq('#tReset').addEventListener('click', () => {
+    if (!confirm('Reset all tuner changes back to the saved defaults?')) return;
+    tune = cloneTune(DEFAULT_TUNE); try { localStorage.removeItem(TUNE_KEY); } catch (e) {}
+    Object.keys(ROOMS).forEach(applyLightTune); Object.keys(matByKey).forEach(applyMatTune); refreshEnv(); refreshLight();
+    if (pickedKey) matRows.forEach(r => r.refresh());
+  });
+  tq('#tClose').addEventListener('click', () => tp.hidden = true);
+  document.getElementById('btnTuner').addEventListener('click', () => { tp.hidden = !tp.hidden; if (!tp.hidden) refreshLight(); });
+  const prevChanged = onLightsChanged;
+  onLightsChanged = () => { prevChanged(); if (!tp.hidden) onBox.checked = ROOMS[circSel.value].on; };
+
 
   renderer.setAnimationLoop(function loop(){
     if (probeDirty){ if (quality === 'low') probeDirty = false; else captureProbe(); }
