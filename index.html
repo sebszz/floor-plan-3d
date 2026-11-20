@@ -769,7 +769,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   // lamp lights: shadowed when possible; without a shadow they are kept short so they can't reach through a wall or the deck
   function lampShadow(l, safeDist){
     l.userData.wantsShadow = true; l.userData.safeDist = safeDist;
-    l.shadow.mapSize.set(512, 512); l.shadow.bias = -0.0005; l.shadow.normalBias = 0.008; l.shadow.camera.near = 0.02;
+    l.shadow.mapSize.set(256, 256); l.shadow.bias = -0.001; l.shadow.normalBias = 0.01; l.shadow.camera.near = 0.03;
   }
   // on Low only the first ordinary light of each circuit is kept: every light costs time on every pixel
   function applyLightLOD(){
@@ -1238,8 +1238,10 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     lampItem.userData.info.dims = ROOMS[lc].label + ': off. Click (or point and press in VR) to switch';
     cyl((x0+x1)/2, 0.28, 0.06, 0.55,0.75, fm.steel);
     cyl((x0+x1)/2, 0.28, 0.12, 0.75,0.95, warmGlow(lc));
-    { const xc = (x0+x1)/2, l = regLight(lc, new THREE.SpotLight(0xffcf96, 0, 1.1, 1.35, 1.0, 2), 0.9);
-      l.position.set(xc, 0.73, 0.43); l.target.position.set(xc, 0, 0.8); lampShadow(l, 1.0); curItem.add(l, l.target); }
+    { // the bulb sits inside the shade and lights all round (wall behind too); shade and stem don't block it
+      curItem.children.forEach(c => c.castShadow = false);
+      const l = regLight(lc, new THREE.PointLight(0xffcf96, 0, 1.1, 2), 0.9);
+      l.position.set((x0+x1)/2, 0.84, 0.28); lampShadow(l, 1.0); curItem.add(l); }
     done();
   });
   // olive green wall behind the bed with a gallery of framed prints
@@ -1462,8 +1464,9 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     lampItem.userData.info.dims = ROOMS[lc].label + ': off. Click (or point and press in VR) to switch';
     cyl(3.78,(z0+z1)/2, 0.06, MZ.y+0.45,MZ.y+0.6, fm.steel);
     cyl(3.78,(z0+z1)/2, 0.11, MZ.y+0.6,MZ.y+0.78, warmGlow(lc));
-    { const zc = (z0+z1)/2, l = regLight(lc, new THREE.SpotLight(0xffcf96, 0, 0.75, 1.35, 1.0, 2), 0.8);
-      l.position.set(3.93, MZ.y + 0.58, zc); l.target.position.set(4.4, MZ.y, zc); lampShadow(l, 0.7); curItem.add(l, l.target); }
+    { curItem.children.forEach(c => c.castShadow = false);
+      const l = regLight(lc, new THREE.PointLight(0xffcf96, 0, 0.75, 2), 0.8);
+      l.position.set(3.78, MZ.y + 0.69, (z0+z1)/2); lampShadow(l, 0.7); curItem.add(l); }
     done();
   });
   item('Ladder', 'Wooden ladder, 2.1 m up to the mezzanine'); grab();
