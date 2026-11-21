@@ -87,6 +87,8 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
 .tuner{position:fixed;right:12px;top:calc(env(safe-area-inset-top,0px) + 12px);width:min(320px,calc(100% - 24px));max-height:calc(100% - 24px);overflow:auto;
   background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);z-index:6}
 .tuner[hidden]{display:none}
+.tuner [aria-pressed="true"]{background:var(--btn-on);color:var(--btn-on-text);border-color:transparent}
+.tuner section[hidden]{display:none}
 .tuner h2{font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:12px 0 6px}
 .tuner section + section{border-top:1px solid var(--line);margin-top:10px}
 .trow{display:grid;grid-template-columns:1fr 1.2fr 3.2em;align-items:center;gap:6px;font-size:.8rem;margin:4px 0}
@@ -127,6 +129,10 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     </select>
   </div>
   <div class="tod">
+    <label for="vrh">VR height <span id="vrhVal">0 cm</span></label>
+    <input type="range" id="vrh" min="-80" max="40" step="1" value="0">
+  </div>
+  <div class="tod">
     <label for="tod">Sun <span id="todVal">13:00</span></label>
     <input type="range" id="tod" min="4" max="22" step="0.25" value="13">
     <div class="presets">
@@ -145,6 +151,8 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   <div class="controls">
     <button id="btnLights" aria-pressed="false">Lights: off</button>
     <button id="btnTuner">Light tuner</button>
+    <button id="btnDoors">Close doors</button>
+    <button id="btnEditor">World editor</button>
     <button id="btnRoof" aria-pressed="false">Show roof</button>
     <button id="btnText" aria-pressed="false">Hide text</button>
     <button id="btnCut" aria-pressed="false">Cut walls down</button>
@@ -156,6 +164,35 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
 </div>
 <div class="hint" id="hint"></div>
 <div class="tip" id="tip" hidden></div>
+<div class="tuner" id="editor" hidden>
+  <div class="phead"><h1>World editor</h1><button id="eClose" title="Close">✕</button></div>
+  <section>
+    <h2>Tool</h2>
+    <div class="controls">
+      <button data-tool="place" aria-pressed="true">Place</button><button data-tool="select" aria-pressed="false">Select / move</button>
+      <button data-tool="raise" aria-pressed="false">Raise</button><button data-tool="lower" aria-pressed="false">Lower</button><button data-tool="flat" aria-pressed="false">Flatten</button>
+    </div>
+    <p id="eHelp" class="tnote">Click the ground or sea to place the chosen object.</p>
+    <div class="trow"><label for="eType">Object</label><select id="eType">
+      <option value="house">House</option><option value="tree">Tree</option><option value="bush">Bush</option><option value="grass">Grass patch</option>
+      <option value="rock">Rock</option><option value="cliff">Cliff</option><option value="mountain">Mountain</option>
+      <option value="wall">Stone retaining wall</option><option value="boat">Boat</option></select></div>
+    <div class="trow"><label for="eSize">Brush size</label><input type="range" id="eSize" min="2" max="40" step="1" value="8"><output></output></div>
+    <div class="trow"><label for="eStr">Brush strength</label><input type="range" id="eStr" min="0.2" max="6" step="0.1" value="1.5"><output></output></div>
+  </section>
+  <section id="eSel" hidden>
+    <h2>Selected: <span id="eSelName"></span></h2>
+    <div class="trow"><label for="eRot">Rotate</label><input type="range" id="eRot" min="0" max="360" step="1"><output></output></div>
+    <div class="trow"><label for="eScale">Size</label><input type="range" id="eScale" min="0.3" max="4" step="0.05"><output></output></div>
+    <div class="trow"><label for="eLift">Lift / sink</label><input type="range" id="eLift" min="-10" max="10" step="0.1"><output></output></div>
+    <div class="controls"><button id="eDel">Delete</button><button id="eDone">Done</button></div>
+  </section>
+  <section>
+    <div class="controls"><button id="eUndo">Undo last object</button><button id="eExport">Export for Claude</button><button id="eReset">Reset world</button></div>
+    <p id="eMsg" class="tnote">Changes save automatically in this browser. Night time lights up the windows.</p>
+    <textarea id="eJson" hidden rows="6" readonly></textarea>
+  </section>
+</div>
 <div class="tuner" id="tuner" hidden>
   <div class="phead"><h1>Light tuner</h1><button id="tClose" title="Close">✕</button></div>
   <section>
@@ -255,6 +292,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   // ---- Time of day: sun path, colour and sky ----
   // Assumes the front (glass doors) faces south: sun rises on the right-hand side (east), sets on the left (west).
   let tod = 13, envK = 0.5, envMats = null, dayK = 1;
+  const worldRefs = {proxies:[], glowMats:[]};
   let probeDirty = true, probeTimer = 0;
   function requestProbe(){ clearTimeout(probeTimer); probeTimer = setTimeout(() => { probeDirty = true; }, 150); }
   const C = h => new THREE.Color(h);
@@ -317,6 +355,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     envK = 0.004 + 0.28*(1 - night)*(0.55 + 0.45*clamp01(up / 0.4));
     dayK = 1 - night; nightK = night; try { syncFill(); } catch (e) {} syncMoon();
     if (envMats) envMats.forEach(m => m.envMapIntensity = envK * (m.userData.envBoost || 1));
+    worldRefs.glowMats.forEach(m => m.emissiveIntensity = night * (m.userData.nightGlow || 1));   // lit windows at night
     requestProbe();
     try { applyIndoorEnv(); } catch (e) {}
     renderer.shadowMap.needsUpdate = true;
@@ -547,6 +586,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   // ---- Walls with openings ----
   const built = new THREE.Group(); model.add(built);
   function clear(){
+    doors.length = 0;
     while (built.children.length){
       const o = built.children.pop();
       o.traverse(n => { if (n.geometry) n.geometry.dispose(); });
@@ -584,6 +624,24 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     m.castShadow = true; m.receiveShadow = true;
     built.add(m); return m;
   }
+  const doors = [];
+  function poseDoor(r){
+    const t = r.ang * r.open, v = [Math.cos(t)*r.dd[0] + Math.sin(t)*r.n[0], Math.cos(t)*r.dd[1] + Math.sin(t)*r.n[1]];
+    r.pivot.rotation.y = Math.atan2(-v[1], v[0]);
+  }
+  function toggleDoor(r){ r.target = r.target > 0.5 ? 0 : 1; r.op.closed = r.target === 0; doorsChanged(); }
+  function setAllDoors(open){ doors.forEach(r => { r.target = open ? 1 : 0; r.op.closed = !open; }); doorsChanged(); }
+  const doorsAllOpen = () => doors.every(r => r.target > 0.5);
+  let doorsChanged = () => {};
+  function animateDoors(dt){
+    let moving = false;
+    doors.forEach(r => {
+      if (Math.abs(r.open - r.target) < 1e-3) return;
+      r.open += Math.sign(r.target - r.open) * Math.min(Math.abs(r.target - r.open), dt * 1.4);
+      poseDoor(r); moving = true;
+    });
+    if (moving){ renderer.shadowMap.needsUpdate = true; requestProbe(); }
+  }
   function addDoorLeaf(w, op){
     const width = op.e - op.s - 0.04;
     const h = Math.min((op.h || DOOR_H) - 0.02, wallH);
@@ -611,6 +669,10 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     }
     leaf.castShadow = true;
     pivot.add(leaf); built.add(pivot);
+    // door state survives rebuilds (stored on the opening itself)
+    const rec = {pivot, dd, n, ang, op, open: op.closed ? 0 : 1, target: op.closed ? 0 : 1};
+    pivot.userData.info = {name:'Door', dims:'Click (or point and press in VR) to open or close'};
+    pivot.userData.door = rec; doors.push(rec); poseDoor(rec);
     const pts = [];
     for (let i=0;i<=24;i++){
       const t = ang*i/24;
@@ -1681,6 +1743,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     terrain.receiveShadow = true;
     // walking uses light, invisible copies of the ground (fine near the house, coarse further out) so hover stays fast
     terrain.raycast = () => {};
+    worldRefs.terrain = terrain; worldRefs.SEA = SEA;
     const walkMat = new THREE.MeshBasicMaterial({visible:false});
     [[95, 50, 17.5, 0, 95, 50], [260, 200, 10, 40, 65, 50]].forEach(([w, d, cx, cz, nx, nz], i) => {
       const g = new THREE.PlaneGeometry(w, d, nx, nz);
@@ -1690,7 +1753,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
       g.computeBoundingSphere();
       const m = new THREE.Mesh(g, walkMat);
       m.userData.floor = true; m.userData.eyeH = 1.6;
-      envG.add(m);
+      envG.add(m); worldRefs.proxies.push(m);
     });
     envG.add(terrain);
 
@@ -1698,7 +1761,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     const sea = new THREE.Mesh(new THREE.PlaneGeometry(4000, 4000),
       new THREE.MeshStandardMaterial({color:0x1f6a8c, roughness:0.18, metalness:0.25}));
     sea.rotation.x = -Math.PI/2; sea.position.set(0, SEA, 600);
-    envG.add(sea);
+    envG.add(sea); worldRefs.sea = sea;
 
     // paving: house platform, front terrace and courtyard (walkable)
     const paveMat = new THREE.MeshStandardMaterial({color:0xb3ada2, roughness:0.95});
@@ -1816,7 +1879,15 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     });
     // town on the hill at (260, 560): small colourful houses facing this way
     const townCols = [0xf4efe6, 0xf2d6b3, 0xe9b89a, 0xf5e3a1, 0xe8c4c4, 0xffffff, 0xd9a07b];
-    const town = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({roughness:0.9}), 420);
+    const winTex = (() => {             // facade with a grid of windows, some lit at night
+      const c = document.createElement('canvas'); c.width = 64; c.height = 64; const g = c.getContext('2d');
+      g.fillStyle = '#000'; g.fillRect(0, 0, 64, 64);
+      for (let y = 0; y < 3; y++) for (let x = 0; x < 3; x++){ g.fillStyle = (x*7 + y*3) % 4 ? '#ffd28a' : '#3a2a1a'; g.fillRect(6 + x*20, 8 + y*19, 10, 11); }
+      return new THREE.CanvasTexture(c);
+    })();
+    const townMat = new THREE.MeshStandardMaterial({roughness:0.9, emissive:0xffc070, emissiveMap:winTex, emissiveIntensity:0});
+    townMat.userData.nightGlow = 2.2; worldRefs.glowMats.push(townMat);
+    const town = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), townMat, 420);
     const toHouse = new THREE.Vector3(-850, 250, -1050).normalize();
     for (let i = 0; i < 420; i++){
       const d = toHouse.clone().add(new THREE.Vector3((rnd()-0.5)*1.1, (rnd()-0.3)*0.9, (rnd()-0.5)*0.8)).normalize();
@@ -1957,6 +2028,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     if (mode === 'walk') el.style.cursor = 'grabbing';
     if (e.pointerType !== 'mouse') hover(e.clientX, e.clientY);   // touch / headset pointer: show the target as soon as you press
   });
+  let editorClick = () => false;
   let ctrlLook = false, lookLast = null, lookDist = 10;
   function startLook(){
     if (ctrlLook || anim || renderer.xr.isPresenting) return;
@@ -2009,9 +2081,15 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   });
   el.addEventListener('pointerup', e => {
     if (tunerPick && !dragging){ tunerPick(firstHit(e.clientX, e.clientY)); down = null; return; }
+    if (!dragging && editorClick(e)){ down = null; return; }
     if (!dragging && !anim){
       const hit = firstHit(e.clientX, e.clientY), sw = itemOf(hit);
       if (sw && sw.userData.switchRoom){ setRoom(sw.userData.switchRoom, !ROOMS[sw.userData.switchRoom].on); show(sw, e.clientX, e.clientY); }
+      else if (sw && sw.userData.door) toggleDoor(sw.userData.door);
+      else if (mode === 'walk' && sw && sw.userData.info.name === 'Ladder'){
+        const up = camera.position.y < DECK + 0.5;
+        walkTo(new THREE.Vector3((up ? 5.45 : 6.75) + OFF[0], up ? DECK : 0, 1.2 + OFF[1]), null);
+      }
       else if (mode === 'walk' && hit && hit.object.userData.floor) walkTo(hit.point, hit.object);
       else if (e.pointerType !== 'mouse') show(itemOf(hit), e.clientX, e.clientY);
     }
@@ -2141,42 +2219,71 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   const xrCam = () => renderer.xr.getCamera(camera);
   const headPos = () => new THREE.Vector3().setFromMatrixPosition(xrCam().matrixWorld);
   const headQuat = () => new THREE.Quaternion().setFromRotationMatrix(xrCam().matrixWorld);
-  let floorOff = 0;              // 1.6 m when the headset gives no floor level ('local' space)
-  let vrState = 'free', askSeat = null, askLight = null, lastSeatTime = 0, saved = null;
+  let floorOff = 0, groundY = 0;
+  let vrState = 'free', ask = null, lastAskTime = 0, saved = null, seated = null, lastT = 0;
+  // personal height correction (cm), saved in this browser
+  let vrHeight = 0;
+  try { vrHeight = parseFloat(localStorage.getItem('vrHeight') || '0') || 0; } catch (e) {}
+  const vrhIn = document.getElementById('vrh'), vrhVal = document.getElementById('vrhVal');
+  function setVrHeight(cm){
+    vrHeight = Math.max(-80, Math.min(40, Math.round(cm)));
+    try { localStorage.setItem('vrHeight', String(vrHeight)); } catch (e) {}
+    vrhIn.value = vrHeight; vrhVal.textContent = (vrHeight > 0 ? '+' : '') + vrHeight + ' cm';
+    if (renderer.xr.isPresenting && vrState !== 'seated') rig.position.y = groundY + floorOff + vrHeight/100;
+  }
+  vrhIn.addEventListener('input', () => setVrHeight(parseFloat(vrhIn.value)));
+  setVrHeight(vrHeight);
 
-  // floating panels inside VR: questions, "Get up" and error messages
+  // ---- small floating panels (question, seated controls, menu, errors) ----
   function makePanel(w, h){
     const c = document.createElement('canvas'); c.width = 1024; c.height = Math.round(1024*h/w);
     const tex = new THREE.CanvasTexture(c);
     const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
       new THREE.MeshBasicMaterial({map:tex, transparent:true, depthTest:false, side:THREE.DoubleSide, toneMapped:false}));
     m.renderOrder = 30; m.visible = false; m.frustumCulled = false;
-    m.userData = {canvas:c, tex, hover:-1, buttons:[], title:''};
+    m.userData = {canvas:c, tex, hover:-1, buttons:[], title:'', sub:'', cols:2, titleFrac:0.42};
     scene.add(m); return m;
   }
   function rr(g, x, y, w, h, r){ g.beginPath(); g.moveTo(x+r, y); g.arcTo(x+w, y, x+w, y+h, r); g.arcTo(x+w, y+h, x, y+h, r); g.arcTo(x, y+h, x, y, r); g.arcTo(x, y, x+w, y, r); g.closePath(); }
-  function drawPanel(p, title, buttons){
-    const c = p.userData.canvas, g = c.getContext('2d'), W = c.width, Hc = c.height;
-    p.userData.title = title; p.userData.buttons = buttons;
+  // layout: a title strip on top, then a grid of pill buttons
+  function layout(p){
+    const W = p.userData.canvas.width, Hc = p.userData.canvas.height, n = p.userData.buttons.length;
+    const cols = Math.min(p.userData.cols, Math.max(n, 1)), rows = Math.max(1, Math.ceil(n / cols));
+    const top = Hc * p.userData.titleFrac, pad = W*0.035, gap = W*0.02;
+    const bw = (W - 2*pad - (cols-1)*gap) / cols, bh = (Hc - top - pad - (rows-1)*gap) / rows;
+    return {W, Hc, cols, rows, top, pad, gap, bw, bh};
+  }
+  function drawPanel(p, title, buttons, sub){
+    p.userData.title = title; p.userData.buttons = buttons; p.userData.sub = sub || '';
+    const c = p.userData.canvas, g = c.getContext('2d'), L = layout(p), {W, Hc} = L;
     g.clearRect(0, 0, W, Hc);
-    rr(g, 8, 8, W-16, Hc-16, 48); g.fillStyle = 'rgba(18,26,34,0.9)'; g.fill();
-    g.fillStyle = '#ffffff'; g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.font = '600 ' + Math.round(Hc*0.16) + 'px Archivo, system-ui, sans-serif';
-    const lines = String(title).match(/.{1,46}(\s|$)/g) || [title];
-    const top = buttons.length ? Hc*0.25 : Hc*0.5;
-    lines.slice(0, 3).forEach((l, i) => g.fillText(l.trim(), W/2, top + (i - (Math.min(lines.length,3)-1)/2) * Hc*0.18));
-    const n = buttons.length, bw = (W - 80 - (n-1)*40) / Math.max(n, 1);
+    rr(g, 4, 4, W-8, Hc-8, Hc*0.12); g.fillStyle = 'rgba(16,22,29,0.82)'; g.fill();
+    g.strokeStyle = 'rgba(255,255,255,0.18)'; g.lineWidth = 3; g.stroke();
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    const ty = buttons.length ? L.top*0.5 : Hc*0.5;
+    g.fillStyle = '#f3f6f9'; g.font = '600 ' + Math.round(Math.min(L.top*0.38, W*0.052)) + 'px Archivo, system-ui, sans-serif';
+    g.fillText(title, W/2, ty - (p.userData.sub ? L.top*0.13 : 0));
+    if (p.userData.sub){ g.fillStyle = 'rgba(220,230,240,0.7)'; g.font = '400 ' + Math.round(Math.min(L.top*0.22, W*0.032)) + 'px Archivo, system-ui, sans-serif'; g.fillText(p.userData.sub, W/2, ty + L.top*0.22); }
     buttons.forEach((b, i) => {
-      const x = 40 + i*(bw + 40), y = Hc*0.55, h = Hc*0.33;
-      rr(g, x, y, bw, h, 36);
-      g.fillStyle = p.userData.hover === i ? '#7fb0de' : (i === 0 ? '#3d8be0' : '#3a4652'); g.fill();
-      g.fillStyle = '#ffffff'; g.font = '700 ' + Math.round(Hc*0.15) + 'px Archivo, system-ui, sans-serif';
-      g.fillText(b, x + bw/2, y + h/2);
+      const col = i % L.cols, row = Math.floor(i / L.cols);
+      const x = L.pad + col*(L.bw + L.gap), y = L.top + row*(L.bh + L.gap);
+      rr(g, x, y, L.bw, L.bh, Math.min(L.bh*0.5, 40));
+      g.fillStyle = p.userData.hover === i ? 'rgba(127,176,222,0.95)' : (i === 0 && buttons.length <= 3 ? 'rgba(61,139,224,0.9)' : 'rgba(255,255,255,0.12)'); g.fill();
+      g.fillStyle = '#ffffff'; g.font = '600 ' + Math.round(Math.min(L.bh*0.42, W*0.045)) + 'px Archivo, system-ui, sans-serif';
+      g.fillText(b, x + L.bw/2, y + L.bh/2);
     });
     p.userData.tex.needsUpdate = true;
   }
-  const btnIndex = (p, uv) => (!uv || uv.y > 0.47 || !p.userData.buttons.length) ? -1 : Math.min(p.userData.buttons.length-1, Math.floor(uv.x * p.userData.buttons.length));
-  const askPanel = makePanel(0.8, 0.36), upPanel = makePanel(0.6, 0.3), errPanel = makePanel(1.0, 0.45);
+  function btnIndex(p, uv){
+    if (!uv || !p.userData.buttons.length) return -1;
+    const L = layout(p), px = uv.x * L.W, py = (1 - uv.y) * L.Hc;
+    if (py < L.top) return -1;
+    const col = Math.floor((px - L.pad + L.gap/2) / (L.bw + L.gap)), row = Math.floor((py - L.top + L.gap/2) / (L.bh + L.gap));
+    if (col < 0 || col >= L.cols || row < 0 || row >= L.rows) return -1;
+    const i = row * L.cols + col; return i < p.userData.buttons.length ? i : -1;
+  }
+  const askPanel = makePanel(0.34, 0.13), upPanel = makePanel(0.36, 0.15), menuPanel = makePanel(0.46, 0.36), errPanel = makePanel(0.5, 0.18);
+  askPanel.userData.cols = 2; upPanel.userData.cols = 3; upPanel.userData.titleFrac = 0.5; menuPanel.userData.cols = 3; menuPanel.userData.titleFrac = 0.16;
   function placeInFront(p, dist, dy){
     const head = headPos(), hq = headQuat(), f = new THREE.Vector3(0, 0, -1).applyQuaternion(hq);
     p.up.set(0, 1, 0);
@@ -2192,27 +2299,34 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   let errTimer = 0;
   function showVRError(e){
     console.error(e);
-    drawPanel(errPanel, 'Something went wrong: ' + (e && e.message ? e.message : e), []);
-    if (renderer.xr.isPresenting) placeInFront(errPanel, 1.2, 0);
+    drawPanel(errPanel, 'Something went wrong', [], String(e && e.message ? e.message : e).slice(0, 70));
+    if (renderer.xr.isPresenting) placeInFront(errPanel, 0.9, -0.1);
     errPanel.visible = true; clearTimeout(errTimer); errTimer = setTimeout(() => errPanel.visible = false, 8000);
   }
 
-  // sofa and beds you can use
+  // ---- things you can point at: sofa, beds, ladder, light switches ----
   const SEATS = {
-    'Sofa':                 {kind:'sit', q:'Would you like to sit on the sofa?', at:[6.95, 2.55], eye:1.12, face:Math.PI, label:'Sitting on the sofa'},
-    'Double bed':           {kind:'lie', q:'Would you like to lie down in bed?', at:[1.35, 0.5], eye:0.72, head:[0, -1], label:'Lying in bed'},
-    'Mezzanine double bed': {kind:'lie', q:'Would you like to lie down in bed?', at:[3.95, 2.85], eye:DECK + 0.5, head:[-1, 0], label:'Lying in the mezzanine bed'}
+    'Sofa':                 {kind:'sit', q:'Sit on the sofa?', at:[6.95, 2.55], eye:1.12, face:Math.PI, label:'On the sofa'},
+    'Double bed':           {kind:'lie', q:'Lie down in bed?', at:[1.35, 0.5], eye:0.72, head:[0, -1], label:'In bed'},
+    'Mezzanine double bed': {kind:'lie', q:'Lie down in bed?', at:[3.95, 2.85], eye:DECK + 0.5, head:[-1, 0], label:'In the mezzanine bed'}
   };
-  function showAsk(name){
-    askSeat = name; askLight = null; vrState = 'ask'; askPanel.userData.hover = -1; askPanel.userData.upPlaced = false;
-    drawPanel(askPanel, SEATS[name].q, ['Yes', 'No']);
-    placeInFront(askPanel, 0.9, -0.15); askPanel.visible = true;
+  function askFor(kind, key){
+    if (vrState === 'ask' && ask && ask.kind === kind && ask.key === key) return;
+    ask = {kind, key}; vrState = 'ask'; askPanel.userData.hover = -1; askPanel.userData.upPlaced = kind !== 'seat';
+    if (kind === 'seat') drawPanel(askPanel, SEATS[key].q, ['Yes', 'No']);
+    else if (kind === 'light') drawPanel(askPanel, ROOMS[key].label, [ROOMS[key].on ? 'Turn off' : 'Turn on', 'Cancel'], ROOMS[key].on ? 'On' : 'Off');
+    else if (kind === 'ladder') drawPanel(askPanel, key === 'down' ? 'Climb down the ladder?' : 'Climb up to the mezzanine?', ['Yes', 'No']);
+    placeInFront(askPanel, 0.75, -0.22); askPanel.visible = true;
   }
-  function hideAsk(){ askPanel.visible = false; if (vrState === 'ask') vrState = 'free'; askSeat = null; askLight = null; }
-  function showLightAsk(room){
-    askSeat = null; askLight = room; vrState = 'ask'; askPanel.userData.hover = -1; askPanel.userData.upPlaced = true;
-    drawPanel(askPanel, ROOMS[room].label + ': ' + (ROOMS[room].on ? 'on' : 'off'), ['Turn on', 'Turn off']);
-    placeInFront(askPanel, 0.9, -0.15); askPanel.visible = true;
+  function hideAsk(){ askPanel.visible = false; if (vrState === 'ask') vrState = 'free'; ask = null; }
+  function answer(k){
+    const a = ask; hideAsk(); if (!a || k !== 0) return;
+    if (a.kind === 'seat') settle(a.key);
+    else if (a.kind === 'light') setRoom(a.key, !ROOMS[a.key].on);
+    else if (a.kind === 'ladder'){
+      if (a.key === 'down') vrTeleport(new THREE.Vector3(6.75 + OFF[0], 0, 1.2 + OFF[1]));
+      else vrTeleport(new THREE.Vector3(5.45 + OFF[0], DECK, 1.2 + OFF[1]));
+    }
   }
   // move the rig so the real head lands at `target` with rig orientation `q`
   function poseHead(target, q){
@@ -2220,6 +2334,16 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     const local = rig.worldToLocal(headPos());
     rig.quaternion.copy(q);
     rig.position.copy(target).sub(local.applyQuaternion(q));
+  }
+  // your own corrections for each seat (tilt, turn, roll, height) - saved in this browser
+  let seatAdj = {};
+  try { seatAdj = JSON.parse(localStorage.getItem('seatAdj') || '{}') || {}; } catch (e) {}
+  let seatSaveT = 0;
+  const saveSeatAdj = () => { clearTimeout(seatSaveT); seatSaveT = setTimeout(() => { try { localStorage.setItem('seatAdj', JSON.stringify(seatAdj)); } catch (e) {} }, 400); };
+  function applySeat(){
+    const a = seatAdj[seated.name] || {p:0, y:0, r:0, h:0};
+    const q = seated.qBase.clone().multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(a.p, a.y, a.r, 'YXZ')));
+    poseHead(seated.target.clone().add(new THREE.Vector3(0, a.h, 0)), q);
   }
   function settle(name){
     const s = SEATS[name];
@@ -2233,11 +2357,9 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     } else {
       const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(local);
       if (fwd.y > 0.55){
-        // you are really lying down (looking up at your own ceiling): keep the room level and only turn it
-        // so the top of your head points to the headboard - real ceiling = virtual ceiling, head turns feel natural
+        // really lying down (looking up at your own ceiling): keep the room level, top of your head to the headboard
         const up = new THREE.Vector3(0, 1, 0).applyQuaternion(local);
-        const th = Math.atan2(s.head[0], s.head[1]) - Math.atan2(up.x, up.z);
-        q = new THREE.Quaternion().setFromAxisAngle(Y, th);
+        q = new THREE.Quaternion().setFromAxisAngle(Y, Math.atan2(s.head[0], s.head[1]) - Math.atan2(up.x, up.z));
       } else {
         // standing or sitting in real life: tilt the room so looking ahead shows the ceiling
         const yw = new THREE.Vector3(s.head[0], 0, s.head[1]).normalize(), zw = new THREE.Vector3(0, -1, 0);
@@ -2246,20 +2368,51 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
               .multiply(new THREE.Quaternion().setFromAxisAngle(Y, -hy));
       }
     }
-    poseHead(target, q);
+    seated = {name, target, qBase:q};
+    applySeat();
     vrState = 'seated'; marker.visible = false;
     upPanel.userData.hover = -1;
-    drawPanel(upPanel, s.label, ['Get up']);
-    if (s.kind === 'sit'){
-      upPanel.position.copy(target).add(new THREE.Vector3(0, -0.3, 0.75)); upPanel.up.set(0, 1, 0);
-    } else {
-      upPanel.position.copy(target).add(new THREE.Vector3(0, 0.75, 0)); upPanel.up.set(s.head[0], 0, s.head[1]);
-    }
+    drawPanel(upPanel, s.label, ['Flip', 'Reset', 'Get up'], 'Sticks: left = tilt / turn, right = roll / height');
+    if (s.kind === 'sit'){ upPanel.position.copy(target).add(new THREE.Vector3(0.25, -0.45, 0.6)); upPanel.up.set(0, 1, 0); }
+    else { upPanel.position.copy(target).add(new THREE.Vector3(0, 0.6, 0)); upPanel.up.set(s.head[0], 0, s.head[1]); }
     upPanel.lookAt(target); upPanel.visible = true;
   }
   function getUp(){
     if (saved){ rig.position.copy(saved.pos); rig.quaternion.copy(saved.quat); }
-    saved = null; upPanel.visible = false; vrState = 'free';
+    saved = null; seated = null; upPanel.visible = false; vrState = 'free';
+  }
+
+  // ---- VR menu (left controller X / menu button) ----
+  const VR_SPOTS = ['lounge', 'kitchen', 'bedroom', 'bathroom', 'mezzanine', 'entrance', 'courtyard', 'terrace'];
+  let spotIdx = 0;
+  const TIMES = [[13, 'Midday'], [17, 'Afternoon'], [19.8, 'Sunset'], [21.5, 'Night'], [6.3, 'Sunrise'], [9, 'Morning']];
+  function menuButtons(){
+    const allOn = Object.values(ROOMS).every(r => r.on);
+    const tn = TIMES.find(t => Math.abs(t[0] - tod) < 0.3);
+    return [allOn ? 'Lights off' : 'Lights on', doorsAllOpen() ? 'Close doors' : 'Open doors', 'Time: ' + (tn ? tn[1] : 'next'),
+            'Lower me', 'Raise me', 'Go: ' + VR_SPOTS[spotIdx], 'Next place', 'Exit VR', 'Close'];
+  }
+  function showMenu(){
+    menuPanel.userData.hover = -1;
+    drawPanel(menuPanel, 'Options', menuButtons(), 'Height ' + (vrHeight > 0 ? '+' : '') + vrHeight + ' cm');
+    placeInFront(menuPanel, 0.7, -0.12); menuPanel.visible = true;
+  }
+  function menuAction(k){
+    const b = menuButtons()[k];
+    if (k === 0) document.getElementById('btnLights').click();
+    else if (k === 1) setAllDoors(!doorsAllOpen());
+    else if (k === 2){ const i = TIMES.findIndex(t => Math.abs(t[0] - tod) < 0.3); const n = TIMES[(i + 1) % TIMES.length][0];
+      const ti = document.getElementById('tod'); ti.value = n; ti.dispatchEvent(new Event('input')); }
+    else if (k === 3) setVrHeight(vrHeight - 5);
+    else if (k === 4) setVrHeight(vrHeight + 5);
+    else if (k === 5){ const s = SPOTS[VR_SPOTS[spotIdx]]; if (vrState === 'seated') getUp();
+      const y = s.y ? (s.y > 2.5 ? DECK : (s.y > 4 ? 3.5 : 0)) : 0;
+      vrTeleport(new THREE.Vector3(s.x + OFF[0], VR_SPOTS[spotIdx] === 'terrace' ? 3.5 : y, s.z + OFF[1])); }
+    else if (k === 6) spotIdx = (spotIdx + 1) % VR_SPOTS.length;
+    else if (k === 7){ const s = renderer.xr.getSession(); if (s) s.end(); return; }
+    else if (k === 8){ menuPanel.visible = false; return; }
+    drawPanel(menuPanel, 'Options', menuButtons(), 'Height ' + (vrHeight > 0 ? '+' : '') + vrHeight + ' cm');
+    void b;
   }
 
   const ctrls = [0, 1].map(i => {
@@ -2274,14 +2427,17 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
         if (ui){
           const k = btnIndex(ui.panel, ui.uv);
           if (k < 0) return;
-          if (ui.panel === askPanel){
-            const name = askSeat, room = askLight; hideAsk();
-            if (room) setRoom(room, k === 0); else if (k === 0) settle(name);
+          if (ui.panel === askPanel) answer(k);
+          else if (ui.panel === menuPanel) menuAction(k);
+          else if (ui.panel === upPanel){
+            if (k === 0){ const a = seatAdj[seated.name] = seatAdj[seated.name] || {p:0, y:0, r:0, h:0}; a.r += Math.PI; applySeat(); saveSeatAdj(); }
+            else if (k === 1){ seatAdj[seated.name] = {p:0, y:0, r:0, h:0}; applySeat(); saveSeatAdj(); }
+            else getUp();
           }
-          else if (ui.panel === upPanel) getUp();
           return;
         }
         if (vrState === 'seated') return;
+        if (c.userData.door){ toggleDoor(c.userData.door); return; }
         if (c.userData.target){ hideAsk(); vrTeleport(c.userData.target); }
       } catch (e){ showVRError(e); }
     });
@@ -2295,22 +2451,23 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
   function vrTeleport(p){
     const head = headPos();
     rig.position.x += p.x - head.x; rig.position.z += p.z - head.z;
-    rig.position.y = p.y + floorOff;            // ground floor, mezzanine deck, terraces or hillside
+    groundY = p.y;
+    rig.position.y = groundY + floorOff + vrHeight/100;      // ground floor, deck, terraces or hillside
   }
   function snapTurn(a){
     const head = headPos(), v = rig.position.clone().sub(head).applyAxisAngle(Y, a);
     rig.position.copy(head).add(v); rig.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(Y, a));
   }
-  const turnLatch = {};
+  const turnLatch = {}, btnLatch = {};
   function vrUpdate(){
-    const now = performance.now();
-    let tgt = null, pointedSeat = null, pointedLight = null;
-    const panels = [askPanel, upPanel].filter(p => p.visible);
+    const now = performance.now(), dt = Math.min(0.1, (now - (lastT || now)) / 1000); lastT = now;
+    let tgt = null, pointed = null;
+    const panels = [askPanel, upPanel, menuPanel].filter(p => p.visible);
     ctrls.forEach(c => {
       tmpM.identity().extractRotation(c.matrixWorld);
       vrRay.ray.origin.setFromMatrixPosition(c.matrixWorld);
       vrRay.ray.direction.set(0, 0, -1).applyMatrix4(tmpM);
-      c.userData.target = null; c.userData.ui = null;
+      c.userData.target = null; c.userData.ui = null; c.userData.door = null;
       const uh = panels.length ? vrRay.intersectObjects(panels, false)[0] : null;
       if (uh){ c.userData.ui = {panel:uh.object, uv:uh.uv}; c.userData.line.scale.z = uh.distance; return; }
       if (vrState === 'seated'){ c.userData.line.scale.z = 2; return; }
@@ -2319,30 +2476,48 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
       if (!h) return;
       if (h.object.userData.floor){ c.userData.target = h.point.clone(); tgt = c.userData.target; }
       const it = itemOf(h);
-      if (it && SEATS[it.userData.info.name]) pointedSeat = it.userData.info.name;
-      if (it && it.userData.switchRoom) pointedLight = it.userData.switchRoom;
+      if (!it) return;
+      const nm = it.userData.info.name;
+      if (it.userData.door) c.userData.door = it.userData.door;
+      else if (it.userData.switchRoom) pointed = ['light', it.userData.switchRoom];
+      else if (SEATS[nm]) pointed = ['seat', nm];
+      else if (nm === 'Ladder') pointed = ['ladder', headPos().y > DECK + 0.6 ? 'down' : 'up'];
     });
     panels.forEach(p => {
       let hv = -1;
       ctrls.forEach(c => { if (c.userData.ui && c.userData.ui.panel === p) hv = Math.max(hv, btnIndex(p, c.userData.ui.uv)); });
-      if (hv !== p.userData.hover){ p.userData.hover = hv; drawPanel(p, p.userData.title, p.userData.buttons); }
+      if (hv !== p.userData.hover){ p.userData.hover = hv; drawPanel(p, p.userData.title, p.userData.buttons, p.userData.sub); }
     });
     if (vrState !== 'seated'){
-      if (pointedLight){ lastSeatTime = now; if (vrState !== 'ask' || askLight !== pointedLight) showLightAsk(pointedLight); }
-      else if (pointedSeat){ lastSeatTime = now; if (vrState !== 'ask' || askSeat !== pointedSeat) showAsk(pointedSeat); }
+      if (pointed){ lastAskTime = now; askFor(pointed[0], pointed[1]); }
       else if (vrState === 'ask'){
-        // give time to lie down in your real bed; once you look up, bring the question above your face
         const f = new THREE.Vector3(0, 0, -1).applyQuaternion(headQuat()), lookingUp = f.y > 0.55;
-        if (lookingUp && !askPanel.userData.upPlaced){ placeInFront(askPanel, 0.8, 0); askPanel.userData.upPlaced = true; }
-        if (!lookingUp && now - lastSeatTime > 6000 && !ctrls.some(c => c.userData.ui)) hideAsk();
+        if (lookingUp && !askPanel.userData.upPlaced){ placeInFront(askPanel, 0.6, 0); askPanel.userData.upPlaced = true; }
+        if (!lookingUp && now - lastAskTime > 5000 && !ctrls.some(c => c.userData.ui)) hideAsk();
       }
     }
     marker.visible = !!tgt && vrState !== 'seated';
     if (tgt) marker.position.set(tgt.x, tgt.y + 0.012, tgt.z);
     const session = renderer.xr.getSession();
-    if (session && vrState !== 'seated') for (const src of session.inputSources){
-      const gp = src.gamepad; if (!gp || gp.axes.length < 4) continue;
-      const x = gp.axes[2], k = src.handedness;
+    if (!session) return;
+    for (const src of session.inputSources){
+      const gp = src.gamepad; if (!gp) continue;
+      const k = src.handedness;
+      // left X button or the menu button (if the browser passes it on) opens the options menu
+      const menuPressed = k === 'left' && [4, 6, 12].some(i => gp.buttons[i] && gp.buttons[i].pressed);
+      if (menuPressed && !btnLatch[k]){ btnLatch[k] = true; if (menuPanel.visible) menuPanel.visible = false; else showMenu(); }
+      else if (!menuPressed && k === 'left') btnLatch[k] = false;
+      if (gp.axes.length < 4) continue;
+      const x = gp.axes[2], yv = gp.axes[3];
+      if (vrState === 'seated' && seated){
+        // sticks fine-tune the seated / lying position to match your real body
+        const a = seatAdj[seated.name] = seatAdj[seated.name] || {p:0, y:0, r:0, h:0};
+        const dz = v => Math.abs(v) < 0.2 ? 0 : v;
+        if (k === 'left'){ a.p -= dz(yv) * dt * 0.8; a.y -= dz(x) * dt * 0.8; }
+        else { a.r -= dz(x) * dt * 0.8; a.h -= dz(yv) * dt * 0.3; }
+        if (dz(x) || dz(yv)){ applySeat(); saveSeatAdj(); }
+        continue;
+      }
       if (Math.abs(x) > 0.7 && !turnLatch[k]){ snapTurn(x > 0 ? -Math.PI/6 : Math.PI/6); turnLatch[k] = true; hideAsk(); }
       else if (Math.abs(x) < 0.3) turnLatch[k] = false;
     }
@@ -2361,13 +2536,13 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     if (!started){ try { await session.end(); } catch (e) {} throw lastErr || new Error('the headset did not start the session'); }
     anim = null; mode = 'walk'; controls.enabled = false; show(null); syncVis();
     camera.position.set(0, 0, 0); camera.quaternion.identity();
-    const s = SPOTS.lounge;
-    rig.position.set(s.x + OFF[0], floorOff, s.z + OFF[1]); rig.rotation.set(0, s.yaw, 0);
-    vrState = 'free'; saved = null;
+    const s = SPOTS.lounge; groundY = 0;
+    rig.position.set(s.x + OFF[0], floorOff + vrHeight/100, s.z + OFF[1]); rig.rotation.set(0, s.yaw, 0);
+    vrState = 'free'; saved = null; seated = null;
     renderer.shadowMap.needsUpdate = true;
     vrBtn.textContent = 'Exit VR';
     session.addEventListener('end', () => {
-      askPanel.visible = upPanel.visible = errPanel.visible = false; vrState = 'free'; saved = null;
+      askPanel.visible = upPanel.visible = errPanel.visible = menuPanel.visible = false; vrState = 'free'; saved = null; seated = null;
       rig.position.set(0, 0, 0); rig.rotation.set(0, 0, 0);
       renderer.shadowMap.needsUpdate = true;
       camera.fov = ORBIT_FOV; camera.updateProjectionMatrix();
@@ -2432,6 +2607,230 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     indoorMats.forEach(m => m.envMapIntensity = PROBE_K * (m.userData.envBoost || 1));
     hide.forEach(o => o.visible = true);
   }
+
+  const btnDoors = document.getElementById('btnDoors');
+  doorsChanged = () => { btnDoors.textContent = doorsAllOpen() ? 'Close doors' : 'Open doors'; };
+  btnDoors.addEventListener('click', () => setAllDoors(!doorsAllOpen()));
+  // ---- World editor: place / move / remove objects and reshape the ground, then export ----
+  const WORLD_KEY = 'worldEdit.v1';
+  const editG = new THREE.Group(); model.add(editG);
+  const W_SEA = worldRefs.SEA;
+  const edMats = {
+    rock: new THREE.MeshStandardMaterial({color:0x8a857a, roughness:1, flatShading:true}),
+    cliff: new THREE.MeshStandardMaterial({color:0x7b766b, roughness:1, flatShading:true}),
+    mountain: new THREE.MeshStandardMaterial({color:0x56603f, roughness:1, flatShading:true}),
+    leaf: [0x2a421a, 0x34491f, 0x3d5424].map(c => new THREE.MeshStandardMaterial({color:c, roughness:0.9, flatShading:true})),
+    trunk: new THREE.MeshStandardMaterial({color:0x5a4634, roughness:1}),
+    grass: new THREE.MeshStandardMaterial({color:0x4f6e2a, roughness:1}),
+    hull: new THREE.MeshStandardMaterial({color:0xf3f3f0, roughness:0.4}),
+    hullBlue: new THREE.MeshStandardMaterial({color:0x1f4e79, roughness:0.5}),
+    deckWood: new THREE.MeshStandardMaterial({color:0xa07a52, roughness:0.8}),
+    roofTile: new THREE.MeshStandardMaterial({color:0xb0533a, roughness:0.9}),
+    frame: new THREE.MeshStandardMaterial({color:0x3b3f44, roughness:0.6})
+  };
+  const houseCols = [0xf4efe6, 0xf2d6b3, 0xe9b89a, 0xf5e3a1, 0xe8c4c4, 0xffffff];
+  const windowGlow = new THREE.MeshStandardMaterial({color:0x2b3440, emissive:0xffc070, emissiveIntensity:0, roughness:0.3});
+  windowGlow.userData.nightGlow = 1.6; worldRefs.glowMats.push(windowGlow);
+  const lumpy = (r, detail, seed, amp) => {
+    const g = new THREE.IcosahedronGeometry(r, detail), p = g.attributes.position;
+    for (let i = 0; i < p.count; i++){
+      const f = 1 + amp*Math.sin(p.getX(i)*3.1/r + seed) * Math.cos(p.getZ(i)*2.7/r + seed*1.7) + amp*0.5*Math.sin(p.getY(i)*5.3/r + seed*2.3);
+      p.setXYZ(i, p.getX(i)*f, p.getY(i)*f, p.getZ(i)*f);
+    }
+    g.computeVertexNormals(); return g;
+  };
+  function addTo(g, geo, mat, x, y, z, sx, sy, sz){
+    const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); if (sx) m.scale.set(sx, sy, sz);
+    m.castShadow = true; m.receiveShadow = true; g.add(m); return m;
+  }
+  const BUILD = {
+    house(g, seed){
+      const w = 6 + (seed % 3), d = 5 + (seed % 2), h = 3.2 + (seed % 2)*2.6, col = houseCols[seed % houseCols.length];
+      addTo(g, new THREE.BoxGeometry(w, h, d), new THREE.MeshStandardMaterial({color:col, roughness:0.9}), 0, h/2, 0);
+      addTo(g, new THREE.BoxGeometry(w + 0.3, 0.25, d + 0.3), seed % 2 ? edMats.roofTile : new THREE.MeshStandardMaterial({color:0xf1efea, roughness:0.9}), 0, h + 0.12, 0);
+      const floors = Math.max(1, Math.round(h / 2.8));
+      for (let f = 0; f < floors; f++){
+        const wy = 1.4 + f*2.6;
+        for (let i = 0; i < 3; i++){
+          const wx = -w/2 + w*(i + 0.5)/3;
+          addTo(g, new THREE.BoxGeometry(0.8, 1.0, 0.06), windowGlow, wx, wy, d/2 + 0.02);
+          addTo(g, new THREE.BoxGeometry(0.8, 1.0, 0.06), windowGlow, wx, wy, -d/2 - 0.02);
+        }
+        addTo(g, new THREE.BoxGeometry(0.06, 1.0, 0.8), windowGlow, w/2 + 0.02, wy, 0);
+        addTo(g, new THREE.BoxGeometry(0.06, 1.0, 0.8), windowGlow, -w/2 - 0.02, wy, 0);
+      }
+      addTo(g, new THREE.BoxGeometry(1.0, 2.1, 0.08), edMats.frame, w*0.3, 1.05, d/2 + 0.03);
+    },
+    tree(g, seed){
+      addTo(g, new THREE.CylinderGeometry(0.18, 0.28, 3, 7), edMats.trunk, 0, 1.5, 0);
+      [[0, 3.6, 0, 1.8], [0.9, 3.1, 0.3, 1.3], [-0.8, 3.3, -0.4, 1.4]].forEach(([x, y, z, r], i) =>
+        addTo(g, lumpy(r, 1, seed + i, 0.12), edMats.leaf[(seed + i) % 3], x, y, z, 1, 0.85, 1));
+    },
+    bush(g, seed){ addTo(g, lumpy(1, 1, seed, 0.15), edMats.leaf[seed % 3], 0, 0.55, 0, 1.2, 0.75, 1.1); },
+    grass(g, seed){
+      const n = 90, im = new THREE.InstancedMesh(new THREE.ConeGeometry(0.05, 0.45, 4), edMats.grass, n), d = new THREE.Object3D();
+      let s = seed + 1; const r = () => (s = (s*16807) % 2147483647) / 2147483647;
+      for (let i = 0; i < n; i++){ const a = r()*6.28, rr = Math.sqrt(r())*2.5; d.position.set(Math.cos(a)*rr, 0.2, Math.sin(a)*rr);
+        d.rotation.set((r()-0.5)*0.5, 0, (r()-0.5)*0.5); const k = 0.6 + r()*0.8; d.scale.set(1, k, 1); d.updateMatrix(); im.setMatrixAt(i, d.matrix); }
+      im.receiveShadow = true; g.add(im);
+    },
+    rock(g, seed){ addTo(g, lumpy(1, 1, seed, 0.22), edMats.rock, 0, 0.4, 0, 1.3, 0.8, 1.1); },
+    cliff(g, seed){ const m = addTo(g, lumpy(1, 2, seed, 0.18), edMats.cliff, 0, 6, 0, 7, 9, 3.5); m.castShadow = false; },
+    mountain(g, seed){ const m = addTo(g, lumpy(1, 3, seed, 0.16), edMats.mountain, 0, 0, 0, 45, 32, 40); m.castShadow = false; },
+    wall(g){
+      const geo = new THREE.BoxGeometry(6, 2.5, 0.5); scaleUV(geo, 6, 2.5, 0.5, 0, 0);
+      addTo(g, geo, mats.stone, 0, 1.25, 0);
+    },
+    boat(g, seed){
+      const sh = new THREE.Shape(); sh.moveTo(-3, 0.5); sh.lineTo(2.6, 0.5); sh.quadraticCurveTo(3.4, 0.6, 3.6, 1.3); sh.lineTo(-3.1, 1.3); sh.lineTo(-3, 0.5);
+      const hull = new THREE.ExtrudeGeometry(sh, {depth:2.2, bevelEnabled:true, bevelThickness:0.2, bevelSize:0.2, bevelSegments:2});
+      hull.translate(0, -0.6, -1.1);
+      addTo(g, hull, seed % 2 ? edMats.hullBlue : edMats.hull, 0, 0, 0);
+      addTo(g, new THREE.BoxGeometry(5.6, 0.08, 2.1), edMats.deckWood, -0.1, 0.75, 0);
+      addTo(g, new THREE.BoxGeometry(1.8, 0.9, 1.6), edMats.hull, -0.8, 1.2, 0);
+      addTo(g, new THREE.BoxGeometry(1.0, 0.35, 1.62), windowGlow, -0.6, 1.3, 0);
+    }
+  };
+  const TYPES = {house:'House', tree:'Tree', bush:'Bush', grass:'Grass patch', rock:'Rock', cliff:'Cliff', mountain:'Mountain', wall:'Stone retaining wall', boat:'Boat'};
+  let world = {objects:[], strokes:[]}, nextSeed = 1;
+  try { const w = JSON.parse(localStorage.getItem(WORLD_KEY) || 'null'); if (w && w.objects && w.strokes) world = w; } catch (e) {}
+  let wSaveT = 0;
+  const saveWorld = () => { clearTimeout(wSaveT); wSaveT = setTimeout(() => { try { localStorage.setItem(WORLD_KEY, JSON.stringify(world)); } catch (e) {} }, 400); };
+  function makeObj(rec){
+    const g = new THREE.Group(); BUILD[rec.type](g, rec.seed);
+    g.userData.info = {name:TYPES[rec.type], dims:'World editor object'}; g.userData.edit = rec;
+    g.position.set(rec.x, rec.y + (rec.dy || 0), rec.z); g.rotation.y = (rec.rot || 0) * Math.PI/180; g.scale.setScalar(rec.scale || 1);
+    editG.add(g); return g;
+  }
+  const r2 = v => Math.round(v*100)/100;
+  // ground shaping: raise, lower or flatten in a soft round brush (applied to the visible ground and the walkable ground)
+  function sculpt(st){
+    const meshes = [worldRefs.terrain, ...worldRefs.proxies];
+    meshes.forEach(m => {
+      const p = m.geometry.attributes.position; let touched = false;
+      for (let i = 0; i < p.count; i++){
+        const dx = p.getX(i) - st.x, dz = p.getZ(i) - st.z, d2 = dx*dx + dz*dz;
+        if (d2 > st.r*st.r) continue;
+        const f = 0.5 + 0.5*Math.cos(Math.PI*Math.sqrt(d2)/st.r);            // smooth, rounded falloff
+        const y = p.getY(i);
+        p.setY(i, st.mode === 'flat' ? y + (st.t - y)*f*st.k : y + st.h*f);
+        touched = true;
+      }
+      if (touched){ p.needsUpdate = true; if (m === worldRefs.terrain) m.geometry.computeVertexNormals(); m.geometry.computeBoundingSphere(); m.geometry.computeBoundingBox(); }
+    });
+    renderer.shadowMap.needsUpdate = true;
+  }
+  // load saved world
+  world.strokes.forEach(sculpt);
+  world.objects.forEach(o => { nextSeed = Math.max(nextSeed, (o.seed || 0) + 1); makeObj(o); });
+
+  // ---- editor panel ----
+  const ep = document.getElementById('editor'), eq = s => ep.querySelector(s);
+  let tool = 'place', selected = null, painting = false, lastPaint = 0;
+  ep.querySelectorAll('[data-tool]').forEach(b => b.addEventListener('click', () => {
+    tool = b.dataset.tool; ep.querySelectorAll('[data-tool]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    eq('#eHelp').textContent = {place:'Click the ground or sea to place the chosen object.', select:'Click an object to select it. Then click the ground to move it there.',
+      raise:'Click or drag on the ground to raise it.', lower:'Click or drag on the ground to dig it down.', flat:'Click or drag to level the ground to the height where you start.'}[tool];
+  }));
+  const eSize = eq('#eSize'), eStr = eq('#eStr');
+  const selBox = new THREE.BoxHelper(undefined, 0xffcc33); selBox.visible = false; scene.add(selBox);
+  function selectObj(g){
+    selected = g; selBox.visible = !!g;
+    eq('#eSel').hidden = !g;
+    if (!g) return;
+    selBox.setFromObject(g);
+    const r = g.userData.edit;
+    eq('#eSelName').textContent = TYPES[r.type];
+    eq('#eRot').value = r.rot || 0; eq('#eScale').value = r.scale || 1; eq('#eLift').value = r.dy || 0;
+  }
+  function updSel(){
+    const r = selected.userData.edit;
+    r.rot = +eq('#eRot').value; r.scale = +eq('#eScale').value; r.dy = +eq('#eLift').value;
+    selected.rotation.y = r.rot*Math.PI/180; selected.scale.setScalar(r.scale); selected.position.y = r.y + r.dy;
+    selBox.setFromObject(selected); renderer.shadowMap.needsUpdate = true; saveWorld();
+  }
+  ['#eRot', '#eScale', '#eLift'].forEach(s => eq(s).addEventListener('input', () => selected && updSel()));
+  eq('#eDel').addEventListener('click', () => {
+    if (!selected) return;
+    world.objects = world.objects.filter(o => o !== selected.userData.edit);
+    editG.remove(selected); selectObj(null); renderer.shadowMap.needsUpdate = true; saveWorld();
+  });
+  eq('#eDone').addEventListener('click', () => selectObj(null));
+  // what is under the pointer: editor objects first, then sea / ground (full detail ground for accuracy)
+  const eRay = new THREE.Raycaster(), eV = new THREE.Vector2();
+  function editHit(cx, cy){
+    const r = renderer.domElement.getBoundingClientRect();
+    eV.set(((cx - r.left)/r.width)*2 - 1, -((cy - r.top)/r.height)*2 + 1);
+    eRay.setFromCamera(eV, camera);
+    const objHit = eRay.intersectObjects(editG.children, true)[0];
+    const hits = [];
+    THREE.Mesh.prototype.raycast.call(worldRefs.terrain, eRay, hits);
+    const sh = eRay.intersectObject(worldRefs.sea, false)[0]; if (sh) hits.push(sh);
+    const houseHit = eRay.intersectObjects([built, furn, floorsG], true)[0]; if (houseHit) hits.push(houseHit);
+    hits.sort((a, b) => a.distance - b.distance);
+    let ground = hits[0] || null;
+    if (objHit && (!ground || objHit.distance <= ground.distance)){
+      let o = objHit.object; while (o && !o.userData.edit) o = o.parent;
+      return {obj:o, point:objHit.point, ground};
+    }
+    return {obj:null, point: ground && ground.point, ground};
+  }
+  const toPlan = pt => ({x: pt.x - OFF[0], y: pt.y, z: pt.z - OFF[1]});
+  function doEdit(cx, cy){
+    const h = editHit(cx, cy);
+    if (tool === 'select'){
+      if (h.obj){ selectObj(h.obj); return; }
+      if (selected && h.point){ const p = toPlan(h.point), r = selected.userData.edit;
+        r.x = r2(p.x); r.y = r2(p.y); r.z = r2(p.z); selected.position.set(r.x, r.y + (r.dy || 0), r.z); selBox.setFromObject(selected);
+        renderer.shadowMap.needsUpdate = true; saveWorld(); }
+      return;
+    }
+    if (!h.point) return;
+    const p = toPlan(h.point);
+    if (tool === 'place'){
+      const type = eq('#eType').value;
+      const y = p.y;                                  // boats sit on the sea when you click the water
+      const rec = {type, x:r2(p.x), y:r2(y), z:r2(p.z), rot:Math.round(Math.random()*360), scale:1, dy:0, seed:nextSeed++};
+      world.objects.push(rec); selectObj(makeObj(rec)); renderer.shadowMap.needsUpdate = true; saveWorld();
+      return;
+    }
+    const st = {mode: tool === 'flat' ? 'flat' : 'height', x:r2(p.x), z:r2(p.z), r:+eSize.value,
+                h: tool === 'raise' ? +eStr.value*0.35 : -(+eStr.value)*0.35, k:0.35, t:r2(painting && flatT !== null ? flatT : p.y)};
+    if (tool === 'flat' && flatT === null) flatT = p.y;
+    if (tool === 'flat') st.t = r2(flatT);
+    sculpt(st); world.strokes.push(st); saveWorld();
+  }
+  let flatT = null;
+  const editing = () => !ep.hidden && !renderer.xr.isPresenting;
+  el.addEventListener('pointerdown', e => {
+    if (!editing() || !['raise', 'lower', 'flat'].includes(tool) || e.button !== 0) return;
+    painting = true; flatT = null; controls.enabled = false; doEdit(e.clientX, e.clientY); lastPaint = performance.now();
+  }, true);
+  el.addEventListener('pointermove', e => {
+    if (!painting) return;
+    const t = performance.now(); if (t - lastPaint < 70) return; lastPaint = t; doEdit(e.clientX, e.clientY);
+  }, true);
+  window.addEventListener('pointerup', () => { if (painting){ painting = false; flatT = null; if (mode === 'orbit') controls.enabled = true; } });
+  editorClick = (e) => { if (!editing() || ['raise', 'lower', 'flat'].includes(tool)) return editing(); doEdit(e.clientX, e.clientY); return true; };
+  eq('#eExport').addEventListener('click', () => {
+    const ta = eq('#eJson'); ta.hidden = false; ta.value = JSON.stringify(world); ta.select();
+    try { navigator.clipboard.writeText(ta.value); eq('#eMsg').textContent = 'Copied - paste it to Claude.'; } catch (e) { eq('#eMsg').textContent = 'Select all and copy the text below.'; }
+  });
+  eq('#eUndo').addEventListener('click', () => {
+    const last = world.objects[world.objects.length - 1];
+    if (!last) return;
+    world.objects.pop(); const g = editG.children.find(c => c.userData.edit === last); if (g) editG.remove(g);
+    if (selected && selected.userData.edit === last) selectObj(null); saveWorld();
+  });
+  eq('#eReset').addEventListener('click', () => {
+    if (!confirm('Remove everything you added and undo all ground changes? (The page will reload.)')) return;
+    try { localStorage.removeItem(WORLD_KEY); } catch (e) {} location.reload();
+  });
+  eq('#eClose').addEventListener('click', () => { ep.hidden = true; selectObj(null); });
+  document.getElementById('btnEditor').addEventListener('click', () => {
+    ep.hidden = !ep.hidden; if (!ep.hidden) document.getElementById('tuner').hidden = true; else selectObj(null);
+  });
+
 
   // ---- Light tuner: adjust each light group and each surface finish, then export the settings ----
   const TUNE_KEY = 'lightTuner.v2';
@@ -2581,12 +2980,14 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outlin
     if (pickedKey) matRows.forEach(r => r.refresh());
   });
   tq('#tClose').addEventListener('click', () => tp.hidden = true);
-  document.getElementById('btnTuner').addEventListener('click', () => { tp.hidden = !tp.hidden; if (!tp.hidden) refreshLight(); });
+  document.getElementById('btnTuner').addEventListener('click', () => { tp.hidden = !tp.hidden; if (!tp.hidden) document.getElementById('editor').hidden = true; if (!tp.hidden) refreshLight(); });
   const prevChanged = onLightsChanged;
   onLightsChanged = () => { prevChanged(); if (!tp.hidden) onBox.checked = ROOMS[circSel.value].on; };
 
 
+  let loopT = performance.now();
   renderer.setAnimationLoop(function loop(){
+    { const t = performance.now(); animateDoors(Math.min(0.1, (t - loopT)/1000)); loopT = t; }
     if (probeDirty){ if (quality === 'low') probeDirty = false; else captureProbe(); }
     camera.getWorldPosition(skyDome.position);
     if (renderer.xr.isPresenting){
